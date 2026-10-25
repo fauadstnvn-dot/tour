@@ -43,12 +43,26 @@ export function pickVariant(choice) {
   return choice;
 }
 
-const css = (seconds, bg) => `
+// Sharp arena frames cut quickly behind the text so real fighters are visible from frame one.
+const reel = (shots, seconds) => {
+  if (!shots.length) return '<div class="bg"></div>';
+  const slot = Math.max(0.7, seconds / shots.length);
+  return `<div class="reel">${shots.map((s, i) =>
+    `<div class="shot" style="background-image:url(data:image/jpeg;base64,${s});animation-delay:${(i * slot).toFixed(2)}s,${(i * slot).toFixed(2)}s;animation-duration:.2s,${(slot * 2).toFixed(2)}s"></div>`).join('')}</div>`;
+};
+
+const css = (seconds) => `
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{width:100%;height:100%;overflow:hidden;background:#05070d;color:#fff;font-family:"Inter","Noto Sans","Segoe UI",Roboto,Arial,sans-serif}
 body:not(.go) *{animation-play-state:paused!important}
-.bg{position:fixed;inset:-6vh;background:${bg ? `center/cover url(data:image/jpeg;base64,${bg})` : 'radial-gradient(circle at 50% 40%,#2a3354,#05070d)'};filter:blur(1.6vh) brightness(.36) saturate(1.25);animation:zoom ${seconds + 1}s linear both}
-.vig{position:fixed;inset:0;background:radial-gradient(ellipse at center,transparent 30%,rgba(0,0,0,.8))}
+.bg{position:fixed;inset:0;background:radial-gradient(circle at 50% 40%,#2a3354,#05070d)}
+.reel{position:fixed;inset:0;background:#05070d}
+.shot{position:absolute;inset:0;background-size:cover;background-position:center;opacity:0;filter:brightness(.8) saturate(1.2);animation-name:shotIn,shotZoom;animation-fill-mode:both,both;animation-timing-function:ease-out,linear}
+.vig{position:fixed;inset:0;background:linear-gradient(to bottom,rgba(0,0,0,.55),rgba(0,0,0,.1) 35%,rgba(0,0,0,.1) 60%,rgba(0,0,0,.7)),radial-gradient(ellipse at center,transparent 40%,rgba(0,0,0,.6))}
+.big,.kicker,.sub,.slot,.chip,.side{text-shadow:0 .5vh 0 #000,0 0 3vh rgba(0,0,0,.9)}
+.slot,.chip{backdrop-filter:blur(.8vh)}
+@keyframes shotIn{from{opacity:0}to{opacity:1}}
+@keyframes shotZoom{from{transform:scale(1.02)}to{transform:scale(1.14)}}
 .wrap{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4vh;text-align:center;padding:0 6vh}
 .kicker{font-size:7.5vh;font-weight:900;letter-spacing:.04em;line-height:1.05;color:#ffd23f;text-shadow:0 .5vh 0 #000,0 0 4vh rgba(255,210,63,.55);animation:pop .45s cubic-bezier(.2,1.6,.4,1) both}
 .big{font-size:26vh;font-weight:900;line-height:1;text-shadow:0 1vh 0 #000,0 0 6vh rgba(255,80,60,.6)}
@@ -131,10 +145,10 @@ setTimeout(()=>keep.classList.add('last'),400+chips.length*step+150);`,
   }
 }
 
-export function buildIntroHtml({ variant, names, bg, lang = 'en', seconds = 5 }) {
+export function buildIntroHtml({ variant, names, shots = [], lang = 'en', seconds = 5 }) {
   const t = TEXT[lang] ?? TEXT.en;
   const { html, js } = body(variant, names.length ? names : ['???'], t, seconds);
-  return `<!doctype html><html><head><meta charset="utf-8"><style>${css(seconds, bg)}</style></head>
-<body><div class="bg"></div><div class="vig"></div>${html}<div class="foot">${esc(t.watch)}</div>
+  return `<!doctype html><html><head><meta charset="utf-8"><style>${css(seconds)}</style></head>
+<body>${reel(shots, seconds)}<div class="vig"></div>${html}<div class="foot">${esc(t.watch)}</div>
 <script>window.__go=function(){document.body.classList.add('go');${js}};</script></body></html>`;
 }
