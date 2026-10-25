@@ -59,8 +59,7 @@ body:not(.go) *{animation-play-state:paused!important}
 .reel{position:fixed;inset:0;background:#05070d}
 .shot{position:absolute;inset:0;background-size:cover;background-position:center;opacity:0;filter:brightness(.8) saturate(1.2);animation-name:shotIn,shotZoom;animation-fill-mode:both,both;animation-timing-function:ease-out,linear}
 .vig{position:fixed;inset:0;background:linear-gradient(to bottom,rgba(0,0,0,.55),rgba(0,0,0,.1) 35%,rgba(0,0,0,.1) 60%,rgba(0,0,0,.7)),radial-gradient(ellipse at center,transparent 40%,rgba(0,0,0,.6))}
-.big,.kicker,.sub,.slot,.chip,.side{text-shadow:0 .5vh 0 #000,0 0 3vh rgba(0,0,0,.9)}
-.slot,.chip{backdrop-filter:blur(.8vh)}
+.big,.kicker,.sub{text-shadow:0 .5vh 0 #000,0 0 3vh rgba(0,0,0,.9)}
 @keyframes shotIn{from{opacity:0}to{opacity:1}}
 @keyframes shotZoom{from{transform:scale(1.02)}to{transform:scale(1.14)}}
 .wrap{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4vh;text-align:center;padding:0 6vh}
@@ -69,17 +68,28 @@ body:not(.go) *{animation-play-state:paused!important}
 .name{font-size:9vh;font-weight:900;text-shadow:0 .6vh 0 #000}
 .sub{font-size:4.6vh;font-weight:700;color:#e8ecf5;opacity:.92;animation:pop .45s cubic-bezier(.2,1.6,.4,1) both}
 .foot{position:fixed;left:0;right:0;bottom:4vh;text-align:center;font-size:3.6vh;font-weight:800;letter-spacing:.2em;color:#fff;opacity:.85;animation:blink 1s ease-in-out infinite}
-.slot{min-width:70vh;padding:3vh 6vh;border:.6vh solid #ffd23f;border-radius:3vh;background:rgba(0,0,0,.55);font-size:11vh;font-weight:900;white-space:nowrap;box-shadow:0 0 6vh rgba(255,210,63,.4)}
-.slot.final{color:#ff4d4d;border-color:#ff4d4d;font-size:20vh;animation:shake .35s ease-in-out 3,pop .3s both}
-.grid{display:grid;gap:1.6vh 2vh;width:100%;max-width:150vh}
-.chip{padding:1.6vh 1vh;border-radius:1.6vh;background:rgba(255,255,255,.1);border:.3vh solid rgba(255,255,255,.28);font-size:4.2vh;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;opacity:0;transform:scale(.6)}
-.chip.in{animation:pop .3s cubic-bezier(.2,1.6,.4,1) both}
-.chip.dead{opacity:.28!important;text-decoration:line-through;text-decoration-thickness:.5vh;text-decoration-color:#ff4d4d;border-color:#ff4d4d;transition:all .2s}
-.chip.last{filter:blur(.8vh);transform:scale(1.25);border-color:#ffd23f;background:rgba(255,210,63,.25);transition:all .5s}
-.side{position:fixed;top:50%;font-size:10vh;font-weight:900;white-space:nowrap;text-shadow:0 .6vh 0 #000}
-.side.l{left:6vh;transform:translateY(-50%);animation:inL .45s cubic-bezier(.2,1,.3,1) both;color:#6ec6ff}
-.side.r{right:6vh;transform:translateY(-50%);animation:inR .45s cubic-bezier(.2,1,.3,1) .15s both;color:#ff8a6e}
-.vs{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);font-size:30vh;font-weight:900;color:#ff3b3b;text-shadow:0 1vh 0 #000,0 0 8vh rgba(255,60,60,.8);animation:slam .4s cubic-bezier(.2,1.8,.4,1) .55s both}
+.hero{font-size:3.4vh;box-shadow:0 0 8vh rgba(255,210,63,.45);animation:pop .5s cubic-bezier(.2,1.6,.4,1) both}
+.hero.final{border-color:#ff4d4d;box-shadow:0 0 8vh rgba(255,60,60,.7);animation:shake .35s ease-in-out 3}
+.card{position:relative;border-radius:1.6vh;overflow:hidden;border:.35vh solid rgba(255,255,255,.4);background:radial-gradient(ellipse at 50% 75%,#2a3760 0%,#0b0f1c 80%);box-shadow:0 1vh 3vh rgba(0,0,0,.6);flex:none}
+.card img{position:absolute;left:6%;top:6%;width:88%;height:84%;object-fit:contain;object-position:center bottom;display:block;filter:drop-shadow(0 .5vh .8vh rgba(0,0,0,.6))}
+.card .ph{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:8em;font-weight:900;color:rgba(255,255,255,.25)}
+.card .nm{position:absolute;left:0;right:0;bottom:0;padding:.9em .4em .4em;background:linear-gradient(transparent,rgba(0,0,0,.9));font-weight:800;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 .2em 0 #000}
+.card.in{opacity:0;animation:pop .3s cubic-bezier(.2,1.6,.4,1) both}
+.card.dead{filter:grayscale(1) brightness(.35);border-color:#ff4d4d;transition:all .25s}
+.card.dead::after,.card.dead::before{content:"";position:absolute;inset:0}
+.card.dead::after{background:linear-gradient(to top right,transparent calc(50% - .3vh),#ff4d4d calc(50% - .3vh),#ff4d4d calc(50% + .3vh),transparent calc(50% + .3vh))}
+.card.dead::before{background:linear-gradient(to bottom right,transparent calc(50% - .3vh),#ff4d4d calc(50% - .3vh),#ff4d4d calc(50% + .3vh),transparent calc(50% + .3vh))}
+.card.sil img{filter:brightness(0)}
+.card.sil .nm{color:#ffd23f}
+.card.last{border-color:#ffd23f;transform:scale(1.18);box-shadow:0 0 5vh rgba(255,210,63,.7);transition:all .5s}
+.grid{display:grid;gap:1.6vh;justify-content:center}
+.strip{display:flex;gap:1.4vh;justify-content:center}
+.top{display:flex;align-items:center;justify-content:center;gap:4vh}
+.big2{font-size:14vh;font-weight:900;line-height:1;color:#fff;text-shadow:0 .8vh 0 #000,0 0 5vh rgba(255,80,60,.6)}
+.fc{position:fixed;top:50%}
+.fc.l{left:20vh;animation:inL .45s cubic-bezier(.2,1,.3,1) both}
+.fc.r{right:20vh;animation:inR .45s cubic-bezier(.2,1,.3,1) .15s both}
+.vs{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);font-size:22vh;font-weight:900;color:#ff3b3b;text-shadow:0 1vh 0 #000,0 0 8vh rgba(255,60,60,.8);animation:slam .4s cubic-bezier(.2,1.8,.4,1) .55s both}
 .flash{position:fixed;inset:0;background:#fff;opacity:0;animation:flash .35s ease-out .55s both}
 .num{animation:pop .35s cubic-bezier(.2,1.8,.4,1) both}
 @keyframes zoom{from{transform:scale(1.08)}to{transform:scale(1.3)}}
@@ -92,62 +102,86 @@ body:not(.go) *{animation-play-state:paused!important}
 @keyframes shake{25%{transform:translateX(-1vh)}75%{transform:translateX(1vh)}}
 `;
 
-function body(variant, names, t, seconds) {
-  const n = names.length;
+const portrait = (f) => (f.img ? `data:image/png;base64,${f.img}` : '');
+
+const card = (f, ch, cls = '') =>
+  `<div class="card ${cls}" style="width:${(ch * 0.9).toFixed(1)}vh;height:${ch}vh;font-size:${Math.max(ch * 0.11, 2.2).toFixed(1)}vh">${
+    f.img ? `<img src="${portrait(f)}" alt="">` : '<div class="ph">?</div>'}<span class="nm">${esc(f.name)}</span></div>`;
+
+// Card size that lets `count` cards fit under a header, on any 16:9 canvas.
+function gridFor(count, header) {
+  const cols = count <= 8 ? Math.max(count, 1) : 8;
+  const rows = Math.ceil(count / cols);
+  const ch = Math.min(34, (100 - header - 14 - (rows - 1) * 1.6) / rows);
+  return { cols, ch: Number(ch.toFixed(1)) };
+}
+const gridStyle = (cols, ch) => `grid-template-columns:repeat(${cols},${(ch * 0.9).toFixed(1)}vh)`;
+
+function body(variant, fighters, t, seconds) {
+  const n = fighters.length;
   const ms = seconds * 1000;
-  const list = JSON.stringify(shuffle(names));
-  const cols = n <= 16 ? 4 : n <= 36 ? 6 : 8;
-  const shown = shuffle(names).slice(0, 32);
+  const shown = shuffle(fighters).slice(0, 32);
 
   switch (variant) {
-    case 'who':
+    case 'who': {
+      const data = JSON.stringify(shuffle(fighters).map((f) => ({ n: f.name, i: portrait(f) })));
       return {
-        html: `<div class="wrap"><div class="kicker">${esc(t.who)}</div><div class="slot" id="slot">?</div><div class="sub" style="animation-delay:.6s">${esc(t.whoSub)}</div></div>`,
-        js: `const names=${list},slot=document.getElementById('slot');let i=0,d=55;const t0=performance.now();
-(function tick(){if(performance.now()-t0>${ms * 0.72}){slot.textContent='?';slot.classList.add('final');return}
-slot.textContent=names[i++%names.length];d=Math.min(380,d*1.07);setTimeout(tick,d)})();`,
+        html: `<div class="wrap"><div class="kicker">${esc(t.who)}</div>${card(shuffle(fighters)[0], 46, 'hero').replace('<img ', '<img id="himg" ').replace('<span class="nm">', '<span class="nm" id="hnm">').replace('class="card hero"', 'id="hero" class="card hero"')}<div class="sub" style="animation-delay:.6s">${esc(t.whoSub)}</div></div>`,
+        js: `const F=${data},hero=document.getElementById('hero'),img=document.getElementById('himg'),nm=document.getElementById('hnm');let i=0,d=60;const t0=performance.now();
+(function tick(){if(performance.now()-t0>${ms * 0.72}){hero.classList.add('sil','final');nm.textContent='???';return}
+const f=F[i++%F.length];if(img&&f.i)img.src=f.i;nm.textContent=f.n;d=Math.min(380,d*1.07);setTimeout(tick,d)})();`,
       };
-    case 'survive':
+    }
+    case 'survive': {
+      const { cols, ch } = gridFor(shown.length, 18);
       return {
-        html: `<div class="wrap"><div class="big num" id="num">${n}</div><div class="kicker" style="animation-delay:.1s">${esc(t.survive)}</div><div class="sub" id="end" style="opacity:0">${esc(t.surviveEnd)}</div></div>`,
-        js: `const num=document.getElementById('num');let c=${n};const step=Math.max(40,${ms * 0.7}/Math.max(1,${n - 1}));
+        html: `<div class="wrap" style="gap:2.5vh;justify-content:flex-start;padding-top:5vh"><div class="top"><div class="big2 num" id="num">${n}</div><div class="kicker" style="font-size:6vh">${esc(t.survive)}</div></div><div class="grid" id="g" style="${gridStyle(cols, ch)}">${shown.map((f) => card(f, ch)).join('')}</div><div class="sub" id="end" style="opacity:0">${esc(t.surviveEnd)}</div></div>`,
+        js: `const num=document.getElementById('num'),cards=[...document.querySelectorAll('.card')].sort(()=>Math.random()-.5),keep=cards.pop();let c=${n};
+const total=Math.max(1,${n - 1}),step=Math.max(50,${ms * 0.7}/total);
 const iv=setInterval(()=>{c--;num.textContent=c;num.classList.remove('num');void num.offsetWidth;num.classList.add('num');
-if(c<=1){clearInterval(iv);const e=document.getElementById('end');e.style.opacity=1;e.style.animation='pop .45s cubic-bezier(.2,1.6,.4,1) both'}},step);`,
+const v=cards.pop();if(v)v.classList.add('dead');
+if(c<=1){clearInterval(iv);keep.classList.add('last');const e=document.getElementById('end');e.style.opacity=1;e.style.animation='pop .45s cubic-bezier(.2,1.6,.4,1) both'}},step);`,
       };
-    case 'predict':
+    }
+    case 'predict': {
+      const { cols, ch } = gridFor(shown.length, 14);
       return {
-        html: `<div class="wrap" style="gap:3vh"><div class="kicker">${esc(t.predict)}</div><div class="grid" style="grid-template-columns:repeat(${cols},1fr)">${shown.map((x, i) => `<div class="chip in" style="animation-delay:${((i * ms * 0.5) / shown.length / 1000).toFixed(2)}s">${esc(x)}</div>`).join('')}</div><div class="sub" style="animation-delay:${(seconds * 0.55).toFixed(2)}s">${esc(t.predictCta)}</div></div>`,
-        js: '',
-      };
-    case 'versus': {
-      const [a, b] = shuffle(names);
-      return {
-        html: `<div class="wrap" style="justify-content:flex-start;padding-top:9vh"><div class="kicker">${esc(t.versusTop)}</div></div><div class="side l">${esc(a)}</div><div class="side r">${esc(b)}</div><div class="vs">VS</div><div class="flash"></div><div class="wrap" style="justify-content:flex-end;padding-bottom:12vh"><div class="sub" style="animation-delay:1.1s">${esc(t.versusBottom)}</div></div>`,
+        html: `<div class="wrap" style="gap:2.5vh;justify-content:flex-start;padding-top:5vh"><div class="kicker" style="font-size:6.5vh">${esc(t.predict)}</div><div class="grid" style="${gridStyle(cols, ch)}">${shown.map((f, i) => card(f, ch, 'in').replace('class="card in"', `class="card in" data-d="${i}"`).replace('style="', `style="animation-delay:${((i * ms * 0.5) / shown.length / 1000).toFixed(2)}s;`)).join('')}</div><div class="sub" style="animation-delay:${(seconds * 0.55).toFixed(2)}s">${esc(t.predictCta)}</div></div>`,
         js: '',
       };
     }
-    case 'countdown':
+    case 'versus': {
+      const [a, b] = shuffle(fighters);
       return {
-        html: `<div class="wrap"><div class="big num" id="num">3</div><div class="sub" style="animation-delay:.2s">${esc(t.countdownSub(n))}</div></div>`,
+        html: `<div class="wrap" style="justify-content:flex-start;padding-top:6vh"><div class="kicker">${esc(t.versusTop)}</div></div><div class="fc l" style="transform:translateY(-50%)">${card(a, 46)}</div><div class="fc r" style="transform:translateY(-50%)">${card(b || a, 46)}</div><div class="vs">VS</div><div class="flash"></div><div class="wrap" style="justify-content:flex-end;padding-bottom:9vh"><div class="sub" style="animation-delay:1.1s">${esc(t.versusBottom)}</div></div>`,
+        js: '',
+      };
+    }
+    case 'countdown': {
+      const strip = shuffle(fighters).slice(0, 8);
+      return {
+        html: `<div class="wrap" style="gap:3vh"><div class="big num" id="num">3</div><div class="sub" style="animation-delay:.2s">${esc(t.countdownSub(n))}</div><div class="strip" style="margin-top:2vh">${strip.map((f, i) => card(f, 22, 'in').replace('style="', `style="animation-delay:${(0.15 * i).toFixed(2)}s;`)).join('')}</div></div>`,
         js: `const num=document.getElementById('num'),seq=['3','2','1',${JSON.stringify(t.fight)}],step=${(ms * 0.22).toFixed(0)};
 seq.forEach((s,i)=>setTimeout(()=>{num.textContent=s;if(i===3){num.style.color='#ff4d4d'}num.classList.remove('num');void num.offsetWidth;num.classList.add('num')},i*step));`,
       };
+    }
     case 'elim':
     default: {
-      const g = shuffle(names).slice(0, 32);
+      const { cols, ch } = gridFor(shown.length, 14);
       return {
-        html: `<div class="wrap" style="gap:3vh"><div class="kicker" style="font-size:6vh">${esc(t.elim)}</div><div class="grid" id="g" style="grid-template-columns:repeat(${cols},1fr)">${g.map((x) => `<div class="chip in">${esc(x)}</div>`).join('')}</div></div>`,
-        js: `const chips=[...document.querySelectorAll('.chip')].sort(()=>Math.random()-.5),keep=chips.pop(),step=Math.max(40,${ms * 0.72}/Math.max(1,chips.length));
-chips.forEach((c,i)=>setTimeout(()=>c.classList.add('dead'),400+i*step));
-setTimeout(()=>keep.classList.add('last'),400+chips.length*step+150);`,
+        html: `<div class="wrap" style="gap:2.5vh;justify-content:flex-start;padding-top:5vh"><div class="kicker" style="font-size:5.6vh">${esc(t.elim)}</div><div class="grid" style="${gridStyle(cols, ch)}">${shown.map((f) => card(f, ch)).join('')}</div></div>`,
+        js: `const cards=[...document.querySelectorAll('.card')].sort(()=>Math.random()-.5),keep=cards.pop(),step=Math.max(50,${ms * 0.7}/Math.max(1,cards.length));
+cards.forEach((c,i)=>setTimeout(()=>c.classList.add('dead'),400+i*step));
+setTimeout(()=>keep.classList.add('sil','last'),400+cards.length*step+150);`,
       };
     }
   }
 }
 
-export function buildIntroHtml({ variant, names, shots = [], lang = 'en', seconds = 5 }) {
+export function buildIntroHtml({ variant, fighters, shots = [], lang = 'en', seconds = 5 }) {
   const t = TEXT[lang] ?? TEXT.en;
-  const { html, js } = body(variant, names.length ? names : ['???'], t, seconds);
+  const list = fighters.length ? fighters : [{ name: '???' }];
+  const { html, js } = body(variant, list, t, seconds);
   return `<!doctype html><html><head><meta charset="utf-8"><style>${css(seconds)}</style></head>
 <body>${reel(shots, seconds)}<div class="vig"></div>${html}<div class="foot">${esc(t.watch)}</div>
 <script>window.__go=function(){document.body.classList.add('go');${js}};</script></body></html>`;

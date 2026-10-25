@@ -86,6 +86,93 @@ const browser = await chromium.launch({
   headless: !opt.headed,
   args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required', '--mute-audio'],
 });
+
+// Runs in the page: crops a PNG to the bounding box of its non-transparent pixels.
+async function trimTransparent(b64) {
+  const img = new Image();
+  img.src = `data:image/png;base64,${b64}`;
+  await img.decode();
+  const c = document.createElement('canvas');
+  c.width = img.width;
+  c.height = img.height;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.drawImage(img, 0, 0);
+  const d = x.getImageData(0, 0, c.width, c.height).data;
+  let minX = c.width, minY = c.height, maxX = -1, maxY = -1;
+  for (let yy = 0; yy < c.height; yy++) {
+    for (let xx = 0; xx < c.width; xx++) {
+      if (d[(yy * c.width + xx) * 4 + 3] > 24) {
+        if (xx < minX) minX = xx;
+        if (xx > maxX) maxX = xx;
+        if (yy < minY) minY = yy;
+        if (yy > maxY) maxY = yy;
+      }
+    }
+  }
+  if (maxX < 0) return null;
+  const pad = 4;
+  minX = Math.max(0, minX - pad); minY = Math.max(0, minY - pad);
+  maxX = Math.min(c.width - 1, maxX + pad); maxY = Math.min(c.height - 1, maxY + pad);
+  const o = document.createElement('canvas');
+  o.width = maxX - minX + 1;
+  o.height = maxY - minY + 1;
+  o.getContext('2d').drawImage(c, minX, minY, o.width, o.height, 0, 0, o.width, o.height);
+  return o.toDataURL('image/png').split(',')[1];
+}
+
+// Portrait of each fighter: a separate, unrecorded page selects the fighter's character,
+// weapon and shield in the game's own viewer and screenshots the character.
+async function capturePortraits(list) {
+  const blank = () => list.map(() => null);
+  const pctx = await browser.newContext({ viewport: { width: capW, height: capH }, deviceScaleFactor: 1 });
+  try {
+    const pp = await pctx.newPage();
+    await pp.goto(opt.url, { waitUntil: 'load', timeout: 60_000 });
+    await pp.waitForFunction(
+      () => window.__rig && window.__rig.catalog && window.__rig.catalog().char.length > 0,
+      null,
+      { timeout: Number(opt['load-timeout']) * 1000 },
+    );
+    await pp.addStyleTag({
+      content: `
+        html, body, .stage-wrap, #stage { background: transparent !important; }
+        #stage::before, #stage::after { display: none !important; }
+        body * { visibility: hidden !important; }
+        #stage, #stage * { visibility: visible !important; }
+        #stage .hud, #stage button, #stage .btn, #status, #tour-panel, #tour-champ, #bk-ov { display: none !important; }
+        #stage { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important;
+                 max-width: none !important; max-height: none !important; margin: 0 !important; z-index: 99999; }
+      `,
+    });
+    await pp.evaluate(() => window.dispatchEvent(new Event('resize')));
+    const clip = { x: Math.round(capW * 0.3), y: Math.round(capH * 0.1), width: Math.round(capW * 0.4), height: Math.round(capH * 0.8) };
+    const out = [];
+    for (const f of list) {
+      const ok = await pp.evaluate(({ char, weapon, shield }) => {
+        const r = window.__rig;
+        const c = r.catalog();
+        const find = (k, p) => (p ? c[k].find((i) => i.path === p) || null : null);
+        const ch = find('char', char);
+        if (!ch) return false;
+        r.select('char', ch);
+        r.select('weapon', find('weapon', weapon));
+        r.select('shield', find('shield', shield));
+        return true;
+      }, f);
+      if (!ok) { out.push(null); continue; }
+      await pp.waitForTimeout(450);
+      const png = (await pp.screenshot({ type: 'png', omitBackground: true, clip })).toString('base64');
+      out.push(await pp.evaluate(trimTransparent, png));
+    }
+    return out;
+  } catch (e) {
+    log('Portrait capture failed:', e.message.split('\n')[0]);
+    return blank();
+  } finally {
+    await pctx.close();
+  }
+}
+
 const context = await browser.newContext({
   viewport: { width: capW, height: capH },
   deviceScaleFactor: 1,
@@ -180,14 +267,17 @@ const trimSeconds = (Date.now() - recordingStartedAt) / 1000;
 log(`Tournament of ${fighters} fighters started. Recording... (trimming first ${trimSeconds.toFixed(1)}s)`);
 
 const shuffled = (a) => a.map((v) => [Math.random(), v]).sort((x, y) => x[0] - y[0]).map((x) => x[1]);
-const rawNames = await page.evaluate(() => {
+const rawFighters = await page.evaluate(() => {
   const r = window.__rig;
   const t = r.tour;
-  if (t && t.entrants && t.entrants.length) return t.entrants.map((e) => e.name);
-  return r.catalog().char.map((c) => c.name);
+  const path = (x) => (x && x.path) || null;
+  if (t && t.entrants && t.entrants.length) {
+    return t.entrants.map((e) => ({ name: e.name, char: path(e.char), weapon: path(e.weapon), shield: path(e.shield) }));
+  }
+  return r.catalog().char.map((c) => ({ name: c.name, char: path(c) }));
 });
-const fighterNames = [...new Set(rawNames.filter(Boolean))];
-const introNames = rawNames.length >= fighters ? fighterNames.slice(0, fighters) : shuffled(fighterNames).slice(0, fighters);
+const fighterPool = rawFighters.filter((f) => f.name);
+const introFighters = (fighterPool.length >= fighters ? fighterPool : shuffled(fighterPool)).slice(0, fighters);
 
 // Match-end moments (the game logs "<match>: X wins") used to cut the highlight clips.
 const events = [];
@@ -240,6 +330,9 @@ await context.close();
 
 let intro = null;
 if (introChoice) {
+  log(`Capturing ${introFighters.length} fighter portraits...`);
+  const portraits = await capturePortraits(introFighters);
+  const introWithImages = introFighters.map((f, i) => ({ ...f, img: portraits[i] }));
   log(`Rendering intro "${introChoice}" (${introSeconds}s)...`);
   const introCtx = await browser.newContext({
     viewport: { width: capW, height: capH },
@@ -249,7 +342,7 @@ if (introChoice) {
   const t0 = Date.now();
   const ip = await introCtx.newPage();
   await ip.setContent(
-    buildIntroHtml({ variant: introChoice, names: introNames, shots, lang: opt.lang, seconds: introSeconds }),
+    buildIntroHtml({ variant: introChoice, fighters: introWithImages, shots, lang: opt.lang, seconds: introSeconds }),
     { waitUntil: 'load' },
   );
   await ip.evaluate(() => document.fonts.ready);
