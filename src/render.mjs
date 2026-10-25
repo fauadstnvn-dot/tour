@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, readdirSync, rmSync, existsSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { parseArgs } from 'node:util';
+import { buildIntroHtml, pickVariant, VARIANTS } from './intro.mjs';
 
 const { values: opt } = parseArgs({
   options: {
@@ -19,6 +20,13 @@ const { values: opt } = parseArgs({
     'load-timeout': { type: 'string', default: '120' },
     retries: { type: 'string', default: process.env.RETRIES ?? '5' },
     'retry-delay': { type: 'string', default: '10' },
+    intro: { type: 'string', default: 'random' },
+    'intro-seconds': { type: 'string', default: '5' },
+    highlights: { type: 'string', default: '4' },
+    'highlight-before': { type: 'string', default: '4' },
+    'highlight-after': { type: 'string', default: '1' },
+    lang: { type: 'string', default: 'en' },
+    crf: { type: 'string' },
     'full-page': { type: 'boolean', default: false },
     headed: { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h', default: false },
@@ -40,6 +48,12 @@ if (opt.help || !opt.url) {
   --end-wait       Seconds to keep recording after the champion appears (default 8)
   --retries        Max attempts to load game data, reloading on failure (default 5)
   --retry-delay    Base seconds between reloads, grows per attempt (default 10)
+  --intro          Hook intro: random (default), none, or ${VARIANTS.join(' | ')}
+  --intro-seconds  Intro length (default 5)
+  --highlights     Number of highlight clips between intro and game, 0 = off (default 4)
+  --highlight-before / --highlight-after  Seconds kept around each KO (default 4 / 1)
+  --lang           Intro text language: en | vi (default en)
+  --crf            x264 quality, lower = better (default 24, or 20 from 1080p up)
   --full-page      Record the whole page instead of only the arena
   --headed         Show the browser window`);
   process.exit(opt.help ? 0 : 1);
@@ -53,12 +67,18 @@ if (!Number.isInteger(fighters) || fighters < 4 || fighters % 4 !== 0) {
 
 const outFile = resolve(opt.out);
 const outHeight = Math.round(Number(opt.height) / 2) * 2;
-const capH = Math.round(Number(opt['capture-height']) / 2) * 2;
+// Never capture below the output height, so 1080p / 1440p (2K) output is not upscaled.
+const capH = Math.max(Math.round(Number(opt['capture-height']) / 2) * 2, outHeight);
 const capW = Math.round((capH * 16) / 9 / 2) * 2;
+const outW = Math.round((outHeight * 16) / 9 / 2) * 2;
+const crf = opt.crf ?? (outHeight >= 1080 ? '20' : '24');
+const introChoice = opt.intro === 'none' ? null : pickVariant(opt.intro);
+const introSeconds = Math.max(2, Number(opt['intro-seconds']));
+const highlightCount = Math.max(0, Math.floor(Number(opt.highlights)));
 const tmpDir = resolve('.tmp-video');
 mkdirSync(dirname(outFile), { recursive: true });
 mkdirSync(tmpDir, { recursive: true });
-for (const f of readdirSync(tmpDir)) rmSync(join(tmpDir, f), { force: true });
+for (const f of readdirSync(tmpDir)) rmSync(join(tmpDir, f), { recursive: true, force: true });
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
@@ -159,42 +179,119 @@ await page.evaluate(() => document.body.classList.add('vid-live'));
 const trimSeconds = (Date.now() - recordingStartedAt) / 1000;
 log(`Tournament of ${fighters} fighters started. Recording... (trimming first ${trimSeconds.toFixed(1)}s)`);
 
+const shuffled = (a) => a.map((v) => [Math.random(), v]).sort((x, y) => x[0] - y[0]).map((x) => x[1]);
+const rawNames = await page.evaluate(() => {
+  const r = window.__rig;
+  const t = r.tour;
+  if (t && t.entrants && t.entrants.length) return t.entrants.map((e) => e.name);
+  return r.catalog().char.map((c) => c.name);
+});
+const fighterNames = [...new Set(rawNames.filter(Boolean))];
+const introNames = rawNames.length >= fighters ? fighterNames.slice(0, fighters) : shuffled(fighterNames).slice(0, fighters);
+
+// Match-end moments (the game logs "<match>: X wins") used to cut the highlight clips.
+const events = [];
+let seenLog = 0;
+let lastPanel = '';
+let backgroundShot = '';
 const startedAt = Date.now();
 let lastReport = 0;
 const maxMs = Number(opt['max-minutes']) * 60_000;
 for (;;) {
-  const done = await page.evaluate(() => {
+  const snap = await page.evaluate(() => {
     const c = document.getElementById('tour-champ');
-    return !!c && !c.hidden;
+    const t = window.__rig.tour;
+    return {
+      done: !!c && !c.hidden,
+      log: t && t.log ? t.log.slice() : null,
+      panel: document.getElementById('tour-panel')?.innerText ?? '',
+    };
   });
-  if (done) break;
+  const now = (Date.now() - recordingStartedAt) / 1000;
+  if (snap.log) {
+    for (; seenLog < snap.log.length; seenLog++) {
+      const line = snap.log[seenLog];
+      if (/wins$/.test(line) && !/bye/i.test(line)) events.push({ t: now, line });
+    }
+  } else if (lastPanel && snap.panel !== lastPanel) {
+    events.push({ t: now, line: snap.panel });
+  }
+  lastPanel = snap.panel;
+  if (snap.done) break;
   const elapsed = Date.now() - startedAt;
+  if (!backgroundShot && elapsed > 3000) {
+    backgroundShot = (await page.screenshot({ type: 'jpeg', quality: 80 })).toString('base64');
+  }
   if (elapsed > maxMs) { log('Time limit reached, stopping early.'); break; }
   if (elapsed - lastReport > 30_000) {
     lastReport = elapsed;
     const txt = await page.evaluate(() => document.getElementById('tour-panel')?.innerText?.slice(0, 80) ?? '');
     log(`Recording ${(elapsed / 60_000).toFixed(1)} min`, txt.replace(/\s+/g, ' '));
   }
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(500);
 }
 log('Champion crowned. Finishing...');
 await page.waitForTimeout(Number(opt['end-wait']) * 1000);
 
 const videoPath = await page.video().path();
 await context.close();
+
+let intro = null;
+if (introChoice) {
+  log(`Rendering intro "${introChoice}" (${introSeconds}s)...`);
+  const introCtx = await browser.newContext({
+    viewport: { width: capW, height: capH },
+    deviceScaleFactor: 1,
+    recordVideo: { dir: join(tmpDir, 'intro'), size: { width: capW, height: capH } },
+  });
+  const t0 = Date.now();
+  const ip = await introCtx.newPage();
+  await ip.setContent(
+    buildIntroHtml({ variant: introChoice, names: introNames, bg: backgroundShot, lang: opt.lang, seconds: introSeconds }),
+    { waitUntil: 'load' },
+  );
+  await ip.evaluate(() => document.fonts.ready);
+  const introTrim = (Date.now() - t0) / 1000 + 0.05;
+  await ip.evaluate(() => window.__go());
+  await ip.waitForTimeout(introSeconds * 1000 + 300);
+  const introPath = await ip.video().path();
+  await introCtx.close();
+  intro = { path: introPath, trim: introTrim };
+}
 await browser.close();
+
+// The last "wins" is the final, which would spoil the champion, so it is never a highlight.
+const before = Number(opt['highlight-before']);
+const after = Number(opt['highlight-after']);
+const candidates = events.slice(0, -1).filter((e) => e.t - before > trimSeconds + 0.5);
+const lastTwo = candidates.slice(-2);
+const picked = [...lastTwo, ...shuffled(candidates.slice(0, -2))].slice(0, highlightCount).sort((a, b) => a.t - b.t);
+log(`Highlights: ${picked.length} clip(s)`, picked.map((p) => p.line).join(' | '));
 
 if (!existsSync(videoPath) || statSync(videoPath).size === 0) {
   console.error('No video was recorded.');
   process.exit(1);
 }
 
-log(`Encoding ${outHeight}p MP4 with ffmpeg...`);
+log(`Encoding ${outW}x${outHeight} MP4 with ffmpeg (crf ${crf})...`);
+const inputs = [];
+const chains = [];
+const norm = `scale=${outW}:${outHeight}:flags=lanczos,setsar=1,fps=${opt.fps},format=yuv420p`;
+const addSegment = (file, start, duration, fade) => {
+  const i = chains.length;
+  inputs.push('-ss', start.toFixed(2), ...(duration ? ['-t', duration.toFixed(2)] : []), '-i', file);
+  const fades = fade ? `,fade=t=in:st=0:d=0.15,fade=t=out:st=${(duration - 0.15).toFixed(2)}:d=0.15` : '';
+  chains.push(`[${i}:v]setpts=PTS-STARTPTS,${norm}${fades}[v${i}]`);
+};
+if (intro) addSegment(intro.path, intro.trim, introSeconds, false);
+for (const e of picked) addSegment(videoPath, e.t - before, before + after, true);
+addSegment(videoPath, trimSeconds, 0, false);
+const labels = chains.map((_, i) => `[v${i}]`).join('');
 const args = [
-  '-y', '-i', videoPath,
-  '-ss', trimSeconds.toFixed(2),
-  '-vf', `scale=-2:${outHeight}:flags=lanczos,fps=${opt.fps}`,
-  '-c:v', 'libx264', '-preset', 'slow', '-crf', '24', '-pix_fmt', 'yuv420p',
+  '-y', ...inputs,
+  '-filter_complex', `${chains.join(';')};${labels}concat=n=${chains.length}:v=1:a=0[v]`,
+  '-map', '[v]',
+  '-c:v', 'libx264', '-preset', outHeight >= 1080 ? 'medium' : 'slow', '-crf', crf, '-pix_fmt', 'yuv420p',
   '-movflags', '+faststart', '-an', outFile,
 ];
 await new Promise((res, rej) => {
