@@ -7,7 +7,7 @@ import { parseArgs } from 'node:util';
 
 const { values: opt } = parseArgs({
   options: {
-    url: { type: 'string', default: process.env.GAME_URL },
+    url: { type: 'string', default: process.env.GAME_URL || 'https://nangmua.vn/2d/2d/' },
     fighters: { type: 'string', default: process.env.FIGHTERS ?? '16' },
     out: { type: 'string', default: process.env.OUT ?? 'output/tournament.mp4' },
     height: { type: 'string', default: '240' },
