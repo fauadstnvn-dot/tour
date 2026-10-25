@@ -193,7 +193,8 @@ const introNames = rawNames.length >= fighters ? fighterNames.slice(0, fighters)
 const events = [];
 let seenLog = 0;
 let lastPanel = '';
-let backgroundShot = '';
+const shots = [];
+let lastShotAt = 0;
 const startedAt = Date.now();
 let lastReport = 0;
 const maxMs = Number(opt['max-minutes']) * 60_000;
@@ -219,8 +220,9 @@ for (;;) {
   lastPanel = snap.panel;
   if (snap.done) break;
   const elapsed = Date.now() - startedAt;
-  if (!backgroundShot && elapsed > 3000) {
-    backgroundShot = (await page.screenshot({ type: 'jpeg', quality: 80 })).toString('base64');
+  if (shots.length < 8 && elapsed - lastShotAt > 3500 && elapsed > 2500) {
+    lastShotAt = elapsed;
+    shots.push((await page.screenshot({ type: 'jpeg', quality: 88 })).toString('base64'));
   }
   if (elapsed > maxMs) { log('Time limit reached, stopping early.'); break; }
   if (elapsed - lastReport > 30_000) {
@@ -247,7 +249,7 @@ if (introChoice) {
   const t0 = Date.now();
   const ip = await introCtx.newPage();
   await ip.setContent(
-    buildIntroHtml({ variant: introChoice, names: introNames, bg: backgroundShot, lang: opt.lang, seconds: introSeconds }),
+    buildIntroHtml({ variant: introChoice, names: introNames, shots, lang: opt.lang, seconds: introSeconds }),
     { waitUntil: 'load' },
   );
   await ip.evaluate(() => document.fonts.ready);
