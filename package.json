@@ -1,0 +1,15 @@
+{
+  "name": "tournament-video-renderer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Render the tournament game to a 240p MP4 using headless Chromium and ffmpeg",
+  "scripts": {
+    "install:browser": "playwright install --with-deps chromium",
+    "render": "node src/render.mjs"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}
