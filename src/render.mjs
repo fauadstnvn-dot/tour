@@ -17,6 +17,8 @@ const { values: opt } = parseArgs({
     'max-minutes': { type: 'string', default: '60' },
     'end-wait': { type: 'string', default: '8' },
     'load-timeout': { type: 'string', default: '120' },
+    retries: { type: 'string', default: process.env.RETRIES ?? '5' },
+    'retry-delay': { type: 'string', default: '10' },
     'full-page': { type: 'boolean', default: false },
     headed: { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h', default: false },
@@ -36,6 +38,8 @@ if (opt.help || !opt.url) {
   --capture-height Browser capture height before downscale (default 480)
   --max-minutes    Abort after this many minutes of recording (default 60)
   --end-wait       Seconds to keep recording after the champion appears (default 8)
+  --retries        Max attempts to load game data, reloading on failure (default 5)
+  --retry-delay    Base seconds between reloads, grows per attempt (default 10)
   --full-page      Record the whole page instead of only the arena
   --headed         Show the browser window`);
   process.exit(opt.help ? 0 : 1);
@@ -71,15 +75,36 @@ const recordingStartedAt = Date.now();
 const page = await context.newPage();
 page.on('pageerror', (e) => log('page error:', e.message));
 
-log('Opening', opt.url);
-await page.goto(opt.url, { waitUntil: 'load', timeout: 60_000 });
-
-log('Waiting for characters to load from the host...');
-await page.waitForFunction(
-  () => window.__rig && window.__rig.catalog && window.__rig.catalog().char.length > 0,
-  null,
-  { timeout: Number(opt['load-timeout']) * 1000 },
-);
+const maxAttempts = Math.max(1, Number(opt.retries));
+const retryDelayMs = Number(opt['retry-delay']) * 1000;
+let loaded = false;
+for (let attempt = 1; attempt <= maxAttempts && !loaded; attempt++) {
+  try {
+    log(`Opening ${opt.url} (attempt ${attempt}/${maxAttempts})`);
+    const res = await page.goto(opt.url, { waitUntil: 'load', timeout: 60_000 });
+    if (res && res.status() >= 400) throw new Error(`HTTP ${res.status()} from host`);
+    log('Waiting for characters to load from the host...');
+    await page.waitForFunction(
+      () => window.__rig && window.__rig.catalog && window.__rig.catalog().char.length > 0,
+      null,
+      { timeout: Number(opt['load-timeout']) * 1000 },
+    );
+    loaded = true;
+  } catch (e) {
+    log(`Load failed: ${e.message.split('\n')[0]}`);
+    if (attempt < maxAttempts) {
+      const wait = retryDelayMs * attempt;
+      log(`Reloading in ${(wait / 1000).toFixed(0)}s...`);
+      await page.waitForTimeout(wait);
+    }
+  }
+}
+if (!loaded) {
+  console.error(`Could not load game data from ${opt.url} after ${maxAttempts} attempts.`);
+  await context.close();
+  await browser.close();
+  process.exit(1);
+}
 const counts = await page.evaluate(() => {
   const c = window.__rig.catalog();
   return Object.fromEntries(Object.keys(c).map((k) => [k, c[k].length]));
