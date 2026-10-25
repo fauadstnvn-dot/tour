@@ -19,6 +19,18 @@ on:
         description: Output height
         default: '240'
         type: string
+      intro:
+        description: Intro (random, none, who, survive, predict, versus, countdown, elim)
+        default: random
+        type: string
+      highlights:
+        description: Number of highlight clips (0 = off)
+        default: '4'
+        type: string
+      lang:
+        description: Intro language (en or vi)
+        default: en
+        type: string
       max_minutes:
         description: Maximum recording time in minutes
         default: '60'
@@ -39,12 +51,15 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - name: Render
         env:
-          GAME_URL: ${{ inputs.url || vars.GAME_URL }}
+          GAME_URL: ${{ inputs.url || vars.GAME_URL || 'https://nangmua.vn/2d/2d/' }}
         run: >
           node src/render.mjs
           --fighters "${{ inputs.fighters }}"
           --speed "${{ inputs.speed }}"
           --height "${{ inputs.height }}"
+          --intro "${{ inputs.intro }}"
+          --highlights "${{ inputs.highlights }}"
+          --lang "${{ inputs.lang }}"
           --max-minutes "${{ inputs.max_minutes }}"
           --out output/tournament.mp4
       - uses: actions/upload-artifact@v4
