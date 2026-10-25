@@ -67,6 +67,7 @@ const context = await browser.newContext({
   deviceScaleFactor: 1,
   recordVideo: { dir: tmpDir, size: { width: capW, height: capH } },
 });
+const recordingStartedAt = Date.now();
 const page = await context.newPage();
 page.on('pageerror', (e) => log('page error:', e.message));
 
@@ -85,15 +86,24 @@ const counts = await page.evaluate(() => {
 });
 log('Catalog:', JSON.stringify(counts));
 
+await page.addStyleTag({
+  content: `
+    /* video only: no clickable buttons anywhere */
+    #bk-ov, #bk-go, #stage button, #stage .btn, #status { display: none !important; }
+    #stage [hidden] { display: none !important; }
+    /* before the tournament starts the stage shows setup hints */
+    body:not(.vid-live) #stage .hud { display: none !important; }
+    .vid-live #stage .hud { display: none !important; }
+  `,
+});
 if (!opt['full-page']) {
   await page.addStyleTag({
     content: `
-      body > *:not(.stage-host):not(script):not(style) { visibility: hidden !important; }
+      body * { visibility: hidden !important; }
+      #stage, #stage * { visibility: visible !important; }
+      #stage [hidden], #stage [hidden] * { visibility: hidden !important; }
       #stage { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important;
-               max-width: none !important; max-height: none !important; margin: 0 !important; z-index: 99999; visibility: visible !important; }
-      #stage * { visibility: visible; }
-      #stage [hidden] { display: none !important; }
-      #status { display: none !important; }
+               max-width: none !important; max-height: none !important; margin: 0 !important; z-index: 99999; }
     `,
   });
   await page.evaluate(() => window.dispatchEvent(new Event('resize')));
@@ -114,7 +124,15 @@ await page.evaluate((n) => {
   sel.value = String(n);
   sel.dispatchEvent(new Event('change', { bubbles: true }));
 }, fighters);
-log(`Tournament of ${fighters} fighters started. Recording...`);
+// Let the first tournament frame render, then cut everything recorded before it.
+await page.waitForFunction(() => {
+  const p = document.getElementById('tour-panel');
+  return !!p && !p.hidden;
+}, null, { timeout: 30_000 }).catch(() => {});
+await page.waitForTimeout(500);
+await page.evaluate(() => document.body.classList.add('vid-live'));
+const trimSeconds = (Date.now() - recordingStartedAt) / 1000;
+log(`Tournament of ${fighters} fighters started. Recording... (trimming first ${trimSeconds.toFixed(1)}s)`);
 
 const startedAt = Date.now();
 let lastReport = 0;
@@ -149,6 +167,7 @@ if (!existsSync(videoPath) || statSync(videoPath).size === 0) {
 log(`Encoding ${outHeight}p MP4 with ffmpeg...`);
 const args = [
   '-y', '-i', videoPath,
+  '-ss', trimSeconds.toFixed(2),
   '-vf', `scale=-2:${outHeight}:flags=lanczos,fps=${opt.fps}`,
   '-c:v', 'libx264', '-preset', 'slow', '-crf', '24', '-pix_fmt', 'yuv420p',
   '-movflags', '+faststart', '-an', outFile,
