@@ -1,0 +1,53 @@
+name: Render tournament video
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Game URL on your host (leave empty to use the GAME_URL repository variable)
+        required: false
+        type: string
+      fighters:
+        description: Number of fighters (multiple of 4)
+        default: '16'
+        type: string
+      speed:
+        description: Game speed (0.2 - 2)
+        default: '1'
+        type: string
+      height:
+        description: Output height
+        default: '240'
+        type: string
+      max_minutes:
+        description: Maximum recording time in minutes
+        default: '60'
+        type: string
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: npm install
+      - run: npx playwright install --with-deps chromium
+      - name: Render
+        env:
+          GAME_URL: ${{ inputs.url || vars.GAME_URL }}
+        run: >
+          node src/render.mjs
+          --fighters "${{ inputs.fighters }}"
+          --speed "${{ inputs.speed }}"
+          --height "${{ inputs.height }}"
+          --max-minutes "${{ inputs.max_minutes }}"
+          --out output/tournament.mp4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tournament-video
+          path: output/tournament.mp4
