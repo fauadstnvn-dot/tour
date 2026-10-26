@@ -375,21 +375,33 @@ const sceneCount = await page
   }, null, { timeout: 60_000 })
   .then((h) => h.jsonValue())
   .catch(() => 0);
+// Pick scenery through the game's own dropdown, one scene per match, so the recorder does not depend
+// on the game's random roll. Returns the chosen scene name, or null when nothing could be selected.
+async function pickScenery() {
+  return page.evaluate(() => {
+    const s = document.getElementById('scenery');
+    const opts = s ? [...s.options].filter((o) => o.value && o.value !== '__random__') : [];
+    if (!opts.length) return null;
+    const o = opts[Math.floor(Math.random() * opts.length)];
+    s.value = o.value;
+    s.dispatchEvent(new Event('change', { bubbles: true }));
+    return { id: o.value, name: o.textContent };
+  });
+}
 if (sceneCount) {
   log(`Scenery: ${sceneCount} scenes available from the host.`);
-  await page.evaluate(() => {
-    const s = document.getElementById('scenery');
-    if (s.value !== '__random__') {
-      s.value = '__random__';
-      s.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-  });
-  // setScenery resolves once all five layers of the first scene are downloaded; wait for the first scene to be drawn.
+  const first = await pickScenery();
+  log(`Scenery selected: ${first ? `${first.name} (${first.id})` : 'none'}`);
   const drawn = await page
-    .waitForFunction(() => !!document.querySelector('image[href*="scenery-file"], image[href^="blob:"]'), null, { timeout: 30_000 })
+    .waitForFunction(() => !!document.querySelector('image[href*="scenery-file"], image[href^="blob:"]'), null, { timeout: 45_000 })
     .then(() => true)
     .catch(() => false);
-  log(drawn ? 'Scenery layers are on stage.' : 'WARNING: scenery was listed but its layers did not appear on stage within 30s.');
+  if (drawn) {
+    log('Scenery layers are on stage.');
+  } else {
+    const seen = await page.evaluate(() => performance.getEntriesByType('resource').filter((e) => e.name.includes('scenery-file')).map((e) => `${e.responseStatus || '?'} ${e.name.slice(-60)}`));
+    log(`WARNING: scenery was selected but its layers did not appear on stage within 45s. Browser saw ${seen.length} scenery file requests${seen.length ? `: ${seen.slice(0, 3).join(' | ')}` : ''}.`);
+  }
 } else {
   log(`WARNING: the host returned no scenery (list HTTP ${sceneryStats.list ?? 'never requested'}); the background will be plain stands.`);
 }
@@ -437,6 +449,7 @@ const introFighters = entrantInfo.map((e) => ({ id: e.id, name: e.name, img: por
 const events = [];
 let seenLog = 0;
 let sceneryChecked = false;
+let lastSceneryMatch = null;
 let lastPanel = '';
 const shots = [];
 let lastShotAt = 0;
@@ -508,6 +521,13 @@ for (;;) {
     events.push({ t: now, line: snap.panel });
   }
   lastPanel = snap.panel;
+  if (sceneCount && snap.match && snap.match.no !== lastSceneryMatch) {
+    if (lastSceneryMatch !== null) {
+      const next = await pickScenery();
+      log(`Scenery for match ${snap.match.no}: ${next ? next.name : 'unchanged'}`);
+    }
+    lastSceneryMatch = snap.match.no;
+  }
   if (!sceneryChecked && snap.match && now - trimSeconds > 15) {
     sceneryChecked = true;
     const onStage = await page.evaluate(() => document.querySelectorAll('image[href*="scenery-file"], image[href^="blob:"]').length);
