@@ -27,8 +27,12 @@ on:
         description: Number of highlight clips (0 = off)
         default: '4'
         type: string
+      match_card:
+        description: Seconds of the pre-match card (0 = off)
+        default: '3.4'
+        type: string
       lang:
-        description: Intro language (en or vi)
+        description: Intro / match card / highlight language (en or vi)
         default: en
         type: string
       max_minutes:
@@ -46,7 +50,7 @@ jobs:
         with:
           node-version: 22
       - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto-core fonts-noto-ui-core fonts-dejavu-core
       - run: npm install
       - run: npx playwright install --with-deps chromium
       - name: Render
@@ -60,6 +64,7 @@ jobs:
           --intro "${{ inputs.intro }}"
           --highlights "${{ inputs.highlights }}"
           --lang "${{ inputs.lang }}"
+          --match-card "${{ inputs.match_card }}"
           --max-minutes "${{ inputs.max_minutes }}"
           --out output/tournament.mp4
       - uses: actions/upload-artifact@v4
