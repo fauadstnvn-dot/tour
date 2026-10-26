@@ -35,6 +35,10 @@ on:
         description: Intro / match card / highlight language (en or vi)
         default: en
         type: string
+      video_minutes:
+        description: Length of the tournament footage in minutes, for quick tests (0 = full tournament; intro, highlights and outro are added on top)
+        default: '0'
+        type: string
       max_minutes:
         description: Maximum recording time in minutes
         default: '60'
@@ -65,6 +69,7 @@ jobs:
           --highlights "${{ inputs.highlights }}"
           --lang "${{ inputs.lang }}"
           --match-card "${{ inputs.match_card }}"
+          --video-minutes "${{ inputs.video_minutes }}"
           --max-minutes "${{ inputs.max_minutes }}"
           --out output/tournament.mp4
       - uses: actions/upload-artifact@v4
