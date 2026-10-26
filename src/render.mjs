@@ -21,7 +21,7 @@ const { values: opt } = parseArgs({
     'end-wait': { type: 'string', default: '0.6' },
     outro: { type: 'string', default: 'random' },
     'outro-seconds': { type: 'string', default: '6' },
-    'load-timeout': { type: 'string', default: '120' },
+    'load-timeout': { type: 'string', default: '0' },
     retries: { type: 'string', default: process.env.RETRIES ?? '5' },
     'retry-delay': { type: 'string', default: '10' },
     intro: { type: 'string', default: 'random' },
@@ -52,6 +52,7 @@ if (opt.help || !opt.url) {
   --end-wait       Seconds kept after the newspaper scene of the final ends (default 0.6)
   --outro          Like/share/subscribe outro: random (default), none, or ${OUTRO_VARIANTS.join(' | ')}
   --outro-seconds  Outro length (default 6, minimum 5)
+  --load-timeout   Seconds to wait for the page to open per attempt (default 0 = no limit)
   --retries        Max attempts to load game data, reloading on failure (default 5)
   --retry-delay    Base seconds between reloads, grows per attempt (default 10)
   --intro          Hook intro: random (default), none, or ${VARIANTS.join(' | ')}
@@ -83,6 +84,7 @@ const introSeconds = Math.max(2, Number(opt['intro-seconds']));
 const outroChoice = opt.outro === 'none' ? null : pickOutro(opt.outro);
 const outroSeconds = Math.max(5, Number(opt['outro-seconds']));
 const endWait = Math.max(0, Number(opt['end-wait']));
+const loadTimeoutMs = Math.max(0, Number(opt['load-timeout'])) * 1000;
 const highlightCount = Math.max(0, Math.floor(Number(opt.highlights)));
 const tmpDir = resolve('.tmp-video');
 mkdirSync(dirname(outFile), { recursive: true });
@@ -136,7 +138,7 @@ async function capturePortraits(list) {
   const pctx = await browser.newContext({ viewport: { width: capW, height: capH }, deviceScaleFactor: 1 });
   try {
     const pp = await pctx.newPage();
-    await pp.goto(opt.url, { waitUntil: 'load', timeout: 60_000 });
+    await pp.goto(opt.url, { waitUntil: 'domcontentloaded', timeout: loadTimeoutMs });
     await pp.waitForFunction(
       () => window.__rig && window.__rig.catalog && window.__rig.catalog().char.length > 0,
       null,
@@ -246,8 +248,11 @@ let loaded = false;
 for (let attempt = 1; attempt <= maxAttempts && !loaded; attempt++) {
   try {
     log(`Opening ${opt.url} (attempt ${attempt}/${maxAttempts})`);
-    const res = await page.goto(opt.url, { waitUntil: 'load', timeout: 60_000 });
+    // Not 'load': that waits for every image/audio/font, and one stalled asset on a slow host times out the whole attempt.
+    // The wait for the character catalog below is the real readiness check.
+    const res = await page.goto(opt.url, { waitUntil: 'domcontentloaded', timeout: loadTimeoutMs });
     if (res && res.status() >= 400) throw new Error(`HTTP ${res.status()} from host`);
+    log(`Host answered HTTP ${res ? res.status() : '?'}`);
     log('Waiting for characters to load from the host...');
     await page.waitForFunction(
       () => window.__rig && window.__rig.catalog && window.__rig.catalog().char.length > 0,
