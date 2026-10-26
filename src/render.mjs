@@ -250,6 +250,20 @@ await context.addInitScript(() => {
 const recordingStartedAt = Date.now();
 const page = await context.newPage();
 page.on('pageerror', (e) => log('page error:', e.message));
+const sceneryStats = { list: null, files: 0, failed: 0 };
+page.on('response', (res) => {
+  const u = res.url();
+  if (u.includes('api=scenery-file')) {
+    sceneryStats.files++;
+    if (res.status() >= 400) { sceneryStats.failed++; log(`Scenery file failed: HTTP ${res.status()} ${decodeURIComponent(u).split('?api=')[1]}`); }
+  } else if (u.includes('api=scenery')) {
+    sceneryStats.list = res.status();
+    log(`Scenery list answered HTTP ${res.status()}`);
+  }
+});
+page.on('requestfailed', (req) => {
+  if (req.url().includes('api=scenery')) log(`Scenery request failed: ${req.failure()?.errorText} ${decodeURIComponent(req.url()).split('?api=')[1]}`);
+});
 
 const maxAttempts = Math.max(1, Number(opt.retries));
 const retryDelayMs = Number(opt['retry-delay']) * 1000;
@@ -353,6 +367,33 @@ const pickList = [];
 log(`Capturing ${pickList.length} fighter portraits...`);
 const portraits = await capturePortraits(pickList);
 
+// The game fills its Scenery dropdown from the host a moment after the characters; the first match must not start before that.
+const sceneCount = await page
+  .waitForFunction(() => {
+    const s = document.getElementById('scenery');
+    return s && s.options.length > 2 ? s.options.length - 2 : false;
+  }, null, { timeout: 60_000 })
+  .then((h) => h.jsonValue())
+  .catch(() => 0);
+if (sceneCount) {
+  log(`Scenery: ${sceneCount} scenes available from the host.`);
+  await page.evaluate(() => {
+    const s = document.getElementById('scenery');
+    if (s.value !== '__random__') {
+      s.value = '__random__';
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  });
+  // setScenery resolves once all five layers of the first scene are downloaded; wait for the first scene to be drawn.
+  const drawn = await page
+    .waitForFunction(() => !!document.querySelector('image[href*="scenery-file"], image[href^="blob:"]'), null, { timeout: 30_000 })
+    .then(() => true)
+    .catch(() => false);
+  log(drawn ? 'Scenery layers are on stage.' : 'WARNING: scenery was listed but its layers did not appear on stage within 30s.');
+} else {
+  log(`WARNING: the host returned no scenery (list HTTP ${sceneryStats.list ?? 'never requested'}); the background will be plain stands.`);
+}
+
 await page.evaluate((n) => {
   const sel = document.getElementById('tour-size');
   if (![...sel.options].some((o) => o.value === String(n))) {
@@ -395,6 +436,7 @@ const introFighters = entrantInfo.map((e) => ({ id: e.id, name: e.name, img: por
 // Match-end moments (the game logs "<match>: X wins") used to cut the highlight clips.
 const events = [];
 let seenLog = 0;
+let sceneryChecked = false;
 let lastPanel = '';
 const shots = [];
 let lastShotAt = 0;
@@ -466,6 +508,11 @@ for (;;) {
     events.push({ t: now, line: snap.panel });
   }
   lastPanel = snap.panel;
+  if (!sceneryChecked && snap.match && now - trimSeconds > 15) {
+    sceneryChecked = true;
+    const onStage = await page.evaluate(() => document.querySelectorAll('image[href*="scenery-file"], image[href^="blob:"]').length);
+    log(onStage ? `Scenery check: ${onStage} scenery images on stage during the match.` : `WARNING: no scenery images on stage during the match (${sceneryStats.files} scenery files requested, ${sceneryStats.failed} failed).`);
+  }
   if (videoLimitSeconds > 0 && now - trimSeconds >= videoLimitSeconds) {
     log(`Test length of ${opt['video-minutes']} min reached, cutting the tournament footage here.`);
     mainEnd = now;
