@@ -35,6 +35,7 @@ const { values: opt } = parseArgs({
     'match-card': { type: 'string', default: '3.4' },
     crf: { type: 'string' },
     'full-page': { type: 'boolean', default: false },
+    'allow-no-scenery': { type: 'boolean', default: false },
     headed: { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h', default: false },
   },
@@ -67,6 +68,7 @@ if (opt.help || !opt.url) {
   --match-card     Seconds of the pre-match card (match number, stage, fighters), 0 = off (default 3.4)
   --crf            x264 quality, lower = better (default 24, or 20 from 1080p up)
   --full-page      Record the whole page instead of only the arena
+  --allow-no-scenery  Keep recording even when the host returns no scenery (default: fail the run after retries, so a scenery-less video is never produced silently)
   --headed         Show the browser window`);
   process.exit(opt.help ? 0 : 1);
 }
@@ -99,9 +101,15 @@ for (const f of readdirSync(tmpDir)) rmSync(join(tmpDir, f), { recursive: true, 
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
+// The host's bot shield fingerprints headless browsers (HeadlessChrome UA,
+// navigator.webdriver) and intermittently answers with an HTML verification
+// page instead of the real file - from GitHub's datacentre IPs far more often
+// than from a home browser. Present a normal Chrome identity on every context
+// so the game, scenery and music requests are treated as a regular visit.
+const REAL_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const browser = await chromium.launch({
   headless: !opt.headed,
-  args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required', '--mute-audio'],
+  args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--autoplay-policy=no-user-gesture-required', '--mute-audio', '--disable-blink-features=AutomationControlled'],
 });
 
 // Runs in the page: crops a PNG to the bounding box of its non-transparent pixels.
@@ -144,7 +152,7 @@ async function trimTransparent(b64) {
 // weapon and shield in the game's own viewer and screenshots the character.
 async function capturePortraits(list) {
   const blank = () => list.map(() => null);
-  const pctx = await browser.newContext({ viewport: { width: capW, height: capH }, deviceScaleFactor: 1 });
+  const pctx = await browser.newContext({ viewport: { width: capW, height: capH }, deviceScaleFactor: 1, userAgent: REAL_UA });
   try {
     const pp = await pctx.newPage();
     await pp.goto(opt.url, { waitUntil: 'domcontentloaded', timeout: loadTimeoutMs });
@@ -196,11 +204,13 @@ async function capturePortraits(list) {
 const context = await browser.newContext({
   viewport: { width: capW, height: capH },
   deviceScaleFactor: 1,
+  userAgent: REAL_UA,
   recordVideo: { dir: tmpDir, size: { width: capW, height: capH } },
 });
 // Playwright's recordVideo has no sound. The game plays every sound through HTMLMediaElement
 // (music and skill mp3), so each play/stop is logged here with a timestamp and mixed later.
 await context.addInitScript(() => {
+  try { Object.defineProperty(Navigator.prototype, 'webdriver', { get: () => undefined, configurable: true }); } catch {}
   const log = (window.__audioLog = []);
   const ids = new WeakMap();
   let next = 1;
@@ -250,15 +260,24 @@ await context.addInitScript(() => {
 const recordingStartedAt = Date.now();
 const page = await context.newPage();
 page.on('pageerror', (e) => log('page error:', e.message));
-const sceneryStats = { list: null, files: 0, failed: 0 };
+const sceneryStats = { list: null, listBadType: 0, files: 0, failed: 0, badType: 0 };
 page.on('response', (res) => {
   const u = res.url();
+  // A response is only a success when the CONTENT matches: the host's bot
+  // shield answers blocked requests with HTTP 200 and an HTML verification
+  // page, which the old status-only check counted as a good scenery response
+  // while the browser dropped the 'image' (it was HTML) and the JSON.parse
+  // of the list failed silently inside the page.
+  const ct = (res.headers()['content-type'] || '').toLowerCase();
   if (u.includes('api=scenery-file')) {
     sceneryStats.files++;
-    if (res.status() >= 400) { sceneryStats.failed++; log(`Scenery file failed: HTTP ${res.status()} ${decodeURIComponent(u).split('?api=')[1]}`); }
+    const wrongType = !ct.startsWith('image/');
+    if (wrongType) sceneryStats.badType++;
+    if (res.status() >= 400 || wrongType) { sceneryStats.failed++; log(`Scenery file failed: HTTP ${res.status()} content-type ${ct || '?'} ${decodeURIComponent(u).split('?api=')[1]}`); }
   } else if (u.includes('api=scenery')) {
     sceneryStats.list = res.status();
-    log(`Scenery list answered HTTP ${res.status()}`);
+    if (!ct.includes('json')) { sceneryStats.listBadType++; log(`Scenery list answered HTTP ${res.status()} but content-type ${ct || '?'} (not JSON - host verification page?)`); }
+    else log(`Scenery list answered HTTP ${res.status()}`);
   }
 });
 page.on('requestfailed', (req) => {
@@ -304,8 +323,12 @@ const counts = await page.evaluate(() => {
 });
 log('Catalog:', JSON.stringify(counts));
 
-await page.addStyleTag({
-  content: `
+// The video-only styles and the music-gesture / speed setup, as functions: a
+// scenery retry may have to reload the page, and a reload drops both, so the
+// retry path re-applies them (see the scenery section below).
+async function applyVideoStyles() {
+  await page.addStyleTag({
+    content: `
     /* video only: no clickable buttons anywhere */
     #bk-ov, #bk-go, #stage button, #stage .btn, #status { display: none !important; }
     #stage [hidden] { display: none !important; }
@@ -319,30 +342,34 @@ await page.addStyleTag({
       border-left-width: max(3px, .5vh) !important; border-radius: 1vh !important; background: rgba(8,12,20,.82) !important; -webkit-line-clamp: 3 !important; }
     #speech-box .sp b { font-size: max(11px, 2vh) !important; margin-right: .8vh !important; }
   `,
-});
-if (!opt['full-page']) {
-  await page.addStyleTag({
-    content: `
+  });
+  if (!opt['full-page']) {
+    await page.addStyleTag({
+      content: `
       body * { visibility: hidden !important; }
       #stage, #stage * { visibility: visible !important; }
       #stage [hidden], #stage [hidden] * { visibility: hidden !important; }
       #stage { position: fixed !important; inset: 0 !important; width: 100vw !important; height: 100vh !important;
                max-width: none !important; max-height: none !important; margin: 0 !important; z-index: 99999; }
     `,
-  });
-  await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+  }
 }
+await applyVideoStyles();
 
-// The game's music starts only after a user gesture; its handler is a plain document listener.
-await page.evaluate(() => {
-  for (const type of ['pointerdown', 'touchstart']) document.dispatchEvent(new Event(type, { bubbles: true }));
-  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', bubbles: true }));
-});
-
-await page.evaluate((speed) => {
-  const s = document.getElementById('speed');
-  if (s) { s.value = String(speed); s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); }
-}, opt.speed);
+async function primeGamePage() {
+  // The game's music starts only after a user gesture; its handler is a plain document listener.
+  await page.evaluate(() => {
+    for (const type of ['pointerdown', 'touchstart']) document.dispatchEvent(new Event(type, { bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', bubbles: true }));
+  });
+  await page.evaluate((speed) => {
+    const s = document.getElementById('speed');
+    if (s) { s.value = String(speed); s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); }
+  }, opt.speed);
+}
+await primeGamePage();
 
 const shuffled = (a) => a.map((v) => [Math.random(), v]).sort((x, y) => x[0] - y[0]).map((x) => x[1]);
 
@@ -368,17 +395,55 @@ log(`Capturing ${pickList.length} fighter portraits...`);
 const portraits = await capturePortraits(pickList);
 
 // The game fills its Scenery dropdown from the host a moment after the characters; the first match must not start before that.
-const sceneCount = await page
-  .waitForFunction(() => {
-    const s = document.getElementById('scenery');
-    return s && s.options.length > 2 ? s.options.length - 2 : false;
-  }, null, { timeout: 60_000 })
-  .then((h) => h.jsonValue())
-  .catch(() => 0);
+async function readSceneCount(timeoutMs) {
+  return page
+    .waitForFunction(() => {
+      const s = document.getElementById('scenery');
+      return s && s.options.length > 2 ? s.options.length - 2 : false;
+    }, null, { timeout: timeoutMs })
+    .then((h) => h.jsonValue())
+    .catch(() => 0);
+}
+let sceneCount = await readSceneCount(60_000);
+// Before this fix, a single empty answer here (one verification-page response
+// to the scenery list, common from GitHub IPs) was logged once and the run
+// carried on scenery-less for its whole length. Now the load is retried -
+// in-page first (the updated index.php can re-fetch the list itself), then
+// by reloading the game - and a run that still gets no scenery FAILS,
+// unless --allow-no-scenery was passed.
+for (let sceneryTry = 1; !sceneCount && sceneryTry <= 3; sceneryTry++) {
+  log(`No scenery from the host yet (try ${sceneryTry}/3; list HTTP ${sceneryStats.list ?? 'never requested'}, list wrong-type responses: ${sceneryStats.listBadType}, scenery files failed: ${sceneryStats.failed}/${sceneryStats.files}). Retrying...`);
+  const viaPage = await page.evaluate(() => (window.__rig && typeof window.__rig.reloadScenery === 'function' ? window.__rig.reloadScenery() : -1)).catch(() => -1);
+  if (viaPage > 0) {
+    sceneCount = viaPage;
+  } else {
+    sceneCount = await readSceneCount(15_000);
+  }
+  if (!sceneCount) {
+    log('Reloading the game page to retry the scenery load...');
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: loadTimeoutMs > 0 ? loadTimeoutMs : 60_000 }).catch(() => {});
+    await page.waitForFunction(
+      () => window.__rig && window.__rig.catalog && window.__rig.catalog().char.length > 0,
+      null,
+      { timeout: 60_000 },
+    ).catch(() => {});
+    await applyVideoStyles().catch(() => {});
+    await primeGamePage().catch(() => {});
+    sceneCount = await readSceneCount(30_000);
+  }
+}
+if (!sceneCount && !opt['allow-no-scenery']) {
+  console.error(`Scenery is required but the host returned none after retries (list HTTP ${sceneryStats.list ?? 'never requested'}, wrong-type list responses: ${sceneryStats.listBadType}). Refusing to record a scenery-less video - check the host's bot protection for this runner, or pass --allow-no-scenery to record with plain stands.`);
+  await context.close().catch(() => {});
+  await browser.close().catch(() => {});
+  process.exit(1);
+}
 // Pick scenery through the game's own dropdown, one scene per match, so the recorder does not depend
-// on the game's random roll. Returns the chosen scene name, or null when nothing could be selected.
+// on the game's random roll. Waits until that scene is actually on stage (the
+// page reports its current scenery, or a scenery image is in the DOM), so a
+// match never starts while its layers are still loading - or failed.
 async function pickScenery() {
-  return page.evaluate(() => {
+  const picked = await page.evaluate(() => {
     const s = document.getElementById('scenery');
     const opts = s ? [...s.options].filter((o) => o.value && o.value !== '__random__') : [];
     if (!opts.length) return null;
@@ -387,6 +452,15 @@ async function pickScenery() {
     s.dispatchEvent(new Event('change', { bubbles: true }));
     return { id: o.value, name: o.textContent };
   });
+  if (!picked) return null;
+  await page
+    .waitForFunction((id) => {
+      const cur = window.__rig && typeof window.__rig.currentScenery === 'function' ? window.__rig.currentScenery() : null;
+      if (cur) return cur.id === id;
+      return !!document.querySelector('image[href*="scenery-file"], image[href^="blob:"]');
+    }, picked.id, { timeout: 20_000 })
+    .catch(() => {});
+  return picked;
 }
 if (sceneCount) {
   log(`Scenery: ${sceneCount} scenes available from the host.`);
@@ -403,7 +477,7 @@ if (sceneCount) {
     log(`WARNING: scenery was selected but its layers did not appear on stage within 45s. Browser saw ${seen.length} scenery file requests${seen.length ? `: ${seen.slice(0, 3).join(' | ')}` : ''}.`);
   }
 } else {
-  log(`WARNING: the host returned no scenery (list HTTP ${sceneryStats.list ?? 'never requested'}); the background will be plain stands.`);
+  log(`WARNING: the host returned no scenery (list HTTP ${sceneryStats.list ?? 'never requested'}); the background will be plain stands (--allow-no-scenery).`);
 }
 
 await page.evaluate((n) => {
@@ -531,7 +605,7 @@ for (;;) {
   if (!sceneryChecked && snap.match && now - trimSeconds > 15) {
     sceneryChecked = true;
     const onStage = await page.evaluate(() => document.querySelectorAll('image[href*="scenery-file"], image[href^="blob:"]').length);
-    log(onStage ? `Scenery check: ${onStage} scenery images on stage during the match.` : `WARNING: no scenery images on stage during the match (${sceneryStats.files} scenery files requested, ${sceneryStats.failed} failed).`);
+    log(onStage ? `Scenery check: ${onStage} scenery images on stage during the match.` : `WARNING: no scenery images on stage during the match (${sceneryStats.files} scenery files requested, ${sceneryStats.failed} failed, ${sceneryStats.badType} with a wrong content-type).`);
   }
   if (videoLimitSeconds > 0 && now - trimSeconds >= videoLimitSeconds) {
     log(`Test length of ${opt['video-minutes']} min reached, cutting the tournament footage here.`);
