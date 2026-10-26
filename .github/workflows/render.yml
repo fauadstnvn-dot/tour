@@ -1,4 +1,4 @@
-name: Render tournament video
+aname: Render tournament video
 
 on:
   workflow_dispatch:
@@ -98,6 +98,10 @@ jobs:
           --out output/tournament.mp4
           ${{ inputs.allow_no_scenery == 'true' && '--allow-no-scenery' || '' }}
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: tournament-video
-          path: output/tournament.mp4
+          path: |
+            output/tournament.mp4
+            output/debug-stage.png
+          if-no-files-found: ignore
