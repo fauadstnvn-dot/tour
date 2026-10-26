@@ -191,11 +191,33 @@ await context.addInitScript(() => {
   const proto = HTMLMediaElement.prototype;
   const origPlay = proto.play;
   const origPause = proto.pause;
+  // `src` is the URL the game just assigned; `currentSrc` still holds the previous track at this point.
   proto.play = function (...args) {
-    const src = this.currentSrc || this.src;
-    if (src) log.push({ k: 'play', id: idOf(this), t: Date.now(), src, off: this.currentTime || 0, vol: this.volume, muted: this.muted });
-    return origPlay.apply(this, args);
+  const src = this.src || this.currentSrc;
+  const id = idOf(this);
+  const t = Date.now();
+  if (src) log.push({ k: 'play', id, t, src, off: this.currentTime || 0, vol: this.volume, muted: this.muted });
+  const result = origPlay.apply(this, args);
+  if (result && result.catch) result.catch(() => log.push({ k: 'stop', id, t: Date.now() }));
+  return result;
   };
+  // The game swaps tracks by assigning `src` without calling pause(), so close the old instance here.
+  const srcDesc = Object.getOwnPropertyDescriptor(proto, 'src');
+  if (srcDesc && srcDesc.set) {
+  Object.defineProperty(proto, 'src', {
+  ...srcDesc,
+  set(value) {
+  log.push({ k: 'stop', id: idOf(this), t: Date.now() });
+  srcDesc.set.call(this, value);
+  },
+  });
+  }
+  // The game sets `unlocked = false` whenever play() is interrupted and only a new gesture re-enables
+  // the music. A real visitor clicks again; the renderer has nobody to click, so keep re-sending it.
+  const sendGesture = () => {
+  for (const type of ['pointerdown', 'keydown', 'touchstart']) document.dispatchEvent(new Event(type, { bubbles: true }));
+  };
+  setInterval(sendGesture, 400);
   proto.pause = function (...args) {
     log.push({ k: 'stop', id: idOf(this), t: Date.now() });
     return origPause.apply(this, args);
@@ -393,7 +415,10 @@ for (const src of new Set(instances.map((i) => i.src))) {
   }
 }
 const mixable = instances.filter((i) => audioFiles.has(i.src));
-log(`Audio: ${mixable.length} sound instance(s) from ${audioFiles.size} file(s)`);
+  const musicCount = mixable.filter((i) => /\/music\//i.test(decodeURIComponent(i.src))).length;
+  const musicSeconds = mixable.filter((i) => /\/music\//i.test(decodeURIComponent(i.src))).reduce((s, i) => s + i.dur, 0);
+  log(`Audio: ${mixable.length} sound instance(s) from ${audioFiles.size} file(s); music: ${musicCount} track(s), ${musicSeconds.toFixed(0)}s of ${recordingSeconds.toFixed(0)}s`);
+  if (!musicCount) log('WARNING: no background music was captured. Check that ?api=music returns tracks on the host.');
 
 const videoPath = await page.video().path();
 await context.close();
