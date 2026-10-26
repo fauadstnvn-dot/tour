@@ -43,6 +43,10 @@ on:
         description: Maximum recording time in minutes
         default: '60'
         type: string
+      allow_no_scenery:
+        description: Allow recording without scenery (default false - the run fails instead of producing a scenery-less video)
+        default: 'false'
+        type: string
 
 jobs:
   render:
@@ -92,6 +96,7 @@ jobs:
           --video-minutes "${{ inputs.video_minutes }}"
           --max-minutes "${{ inputs.max_minutes }}"
           --out output/tournament.mp4
+          ${{ inputs.allow_no_scenery == 'true' && '--allow-no-scenery' || '' }}
       - uses: actions/upload-artifact@v4
         with:
           name: tournament-video
