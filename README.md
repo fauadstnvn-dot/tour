@@ -42,6 +42,7 @@ You can also set `GAME_URL` and `FIGHTERS` as environment variables.
 | `--highlights` | 4 | Highlight clips between intro and game (0 = off) |
 | `--highlight-before` / `--highlight-after` | 5 / 1 | Seconds kept before / after each KO (clips never leave the fight itself) |
 | `--lang` | `en` | Text language for intro, match cards and highlight frames (`en`, `vi`) |
+| `--video-minutes` | 0 | Cut the tournament footage to N minutes for quick tests (0 = full tournament) |
 | `--match-card` | 3.4 | Seconds of the card shown before every match (match number, stage, fighter portraits + names), 0 = off |
 | `--crf` | 24 (20 from 1080p) | x264 quality, lower = better |
 | `--full-page` | off | Record the whole page, not only the arena |
