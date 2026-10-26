@@ -224,7 +224,8 @@ await context.addInitScript(() => {
   // The game sets `unlocked = false` whenever play() is interrupted and only a new gesture re-enables
   // the music. A real visitor clicks again; the renderer has nobody to click, so keep re-sending it.
   const sendGesture = () => {
-  for (const type of ['pointerdown', 'keydown', 'touchstart']) document.dispatchEvent(new Event(type, { bubbles: true }));
+  for (const type of ['pointerdown', 'touchstart']) document.dispatchEvent(new Event(type, { bubbles: true }));
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', bubbles: true }));
   };
   setInterval(sendGesture, 400);
   proto.pause = function (...args) {
@@ -300,7 +301,8 @@ if (!opt['full-page']) {
 
 // The game's music starts only after a user gesture; its handler is a plain document listener.
 await page.evaluate(() => {
-  for (const type of ['pointerdown', 'keydown', 'touchstart']) document.dispatchEvent(new Event(type, { bubbles: true }));
+  for (const type of ['pointerdown', 'touchstart']) document.dispatchEvent(new Event(type, { bubbles: true }));
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', bubbles: true }));
 });
 
 await page.evaluate((speed) => {
@@ -428,13 +430,19 @@ mkdirSync(audioDir, { recursive: true });
 const audioFiles = new Map();
 for (const src of new Set(instances.map((i) => i.src))) {
   try {
-    const res = await context.request.get(src, { timeout: 30_000 });
-    if (!res.ok()) throw new Error(`HTTP ${res.status()}`);
     const file = join(audioDir, `a${audioFiles.size}.bin`);
-    writeFileSync(file, await res.body());
+    const dataUri = src.match(/^data:[^,]*;base64,(.*)$/s);
+    if (dataUri) {
+      // Sounds synthesized inside the game (animal voices) come as data: URIs, not downloadable URLs.
+      writeFileSync(file, Buffer.from(dataUri[1], 'base64'));
+    } else {
+      const res = await context.request.get(src, { timeout: 30_000 });
+      if (!res.ok()) throw new Error(`HTTP ${res.status()}`);
+      writeFileSync(file, await res.body());
+    }
     audioFiles.set(src, file);
   } catch (e) {
-    log(`Could not download sound ${src}: ${e.message}`);
+    log(`Could not download sound ${src.slice(0, 80)}: ${e.message}`);
   }
 }
 const mixable = instances.filter((i) => audioFiles.has(i.src));
