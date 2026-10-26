@@ -543,7 +543,32 @@ for (const src of new Set(instances.map((i) => i.src))) {
     log(`Could not download sound ${src.slice(0, 80)}: ${e.message}`);
   }
 }
-const mixable = instances.filter((i) => audioFiles.has(i.src));
+let mixable = instances.filter((i) => audioFiles.has(i.src));
+const isMusic = (i) => /\/music\//i.test(decodeURIComponent(i.src));
+// How much of the footage that actually ends up in the video (after the trimmed start) has music under it.
+const footageStart = trimSeconds;
+const musicCovered = mixable.filter(isMusic).reduce((s, i) => s + Math.max(0, Math.min(i.start + i.dur, recordingSeconds) - Math.max(i.start, footageStart)), 0);
+const footageSeconds = Math.max(0, recordingSeconds - footageStart);
+for (const i of mixable.filter(isMusic)) log(`Music: ${decodeURIComponent(i.src).split('/').slice(-2).join('/')} at ${i.start.toFixed(1)}s for ${i.dur.toFixed(1)}s`);
+if (footageSeconds > 5 && musicCovered < footageSeconds * 0.5) {
+  // The game page did not keep its music playing during the recording, so loop its background track instead.
+  try {
+    log(`Music covers only ${musicCovered.toFixed(0)}s of ${footageSeconds.toFixed(0)}s of footage; adding looped background music from the host.`);
+    const list = await (await context.request.get(new URL('?api=music', opt.url).href, { timeout: 30_000 })).json();
+    const track = (list.nhac_nen || [])[0];
+    if (!track) throw new Error('host has no nhac_nen track');
+    const url = new URL(track, opt.url).href;
+    const res = await context.request.get(url, { timeout: 30_000 });
+    if (!res.ok()) throw new Error(`HTTP ${res.status()}`);
+    const file = join(audioDir, `a${audioFiles.size}.bin`);
+    writeFileSync(file, await res.body());
+    audioFiles.set(url, file);
+    mixable = mixable.filter((i) => !(isMusic(i) && i.start >= footageStart));
+    mixable.push({ src: url, start: footageStart, dur: footageSeconds, off: 0, vol: 0.22, loop: true });
+  } catch (e) {
+    log(`Could not add fallback music: ${e.message}`);
+  }
+}
   const musicCount = mixable.filter((i) => /\/music\//i.test(decodeURIComponent(i.src))).length;
   const musicSeconds = mixable.filter((i) => /\/music\//i.test(decodeURIComponent(i.src))).reduce((s, i) => s + i.dur, 0);
   log(`Audio: ${mixable.length} sound instance(s) from ${audioFiles.size} file(s); music: ${musicCount} track(s), ${musicSeconds.toFixed(0)}s of ${recordingSeconds.toFixed(0)}s`);
@@ -654,7 +679,7 @@ async function mixGameAudio(list, totalSeconds, outPath) {
     const ins = [];
     const chs = [];
     batch.forEach((s, i) => {
-      ins.push('-ss', Math.max(0, s.off).toFixed(3), '-t', s.dur.toFixed(3), '-i', audioFiles.get(s.src));
+      ins.push(...(s.loop ? ['-stream_loop', '-1'] : []), '-ss', Math.max(0, s.off).toFixed(3), '-t', s.dur.toFixed(3), '-i', audioFiles.get(s.src));
       const delay = Math.max(0, Math.round(s.start * 1000));
       const fadeOut = Math.min(0.25, s.dur / 2);
       chs.push(
