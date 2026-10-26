@@ -1,4 +1,4 @@
-aname: Render tournament video
+name: Render tournament video
 
 on:
   workflow_dispatch:
