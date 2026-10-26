@@ -4,7 +4,8 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, readdirSync, rmSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { parseArgs } from 'node:util';
-import { buildIntroHtml, pickVariant, VARIANTS } from './intro.mjs';
+import { buildIntroHtml, buildTitleCardHtml, introText, pickVariant, VARIANTS } from './intro.mjs';
+import { highlightChain, installMatchCard, renderHighlightAssets, stageLabel, textFor } from './fx.mjs';
 import { buildOutroHtml, pickOutro, OUTRO_VARIANTS } from './outro.mjs';
 import { makeIntroAudio, makeOutroAudio } from './sfx.mjs';
 
@@ -27,9 +28,10 @@ const { values: opt } = parseArgs({
     intro: { type: 'string', default: 'random' },
     'intro-seconds': { type: 'string', default: '5' },
     highlights: { type: 'string', default: '4' },
-    'highlight-before': { type: 'string', default: '4' },
+    'highlight-before': { type: 'string', default: '5' },
     'highlight-after': { type: 'string', default: '1' },
     lang: { type: 'string', default: 'en' },
+    'match-card': { type: 'string', default: '3.4' },
     crf: { type: 'string' },
     'full-page': { type: 'boolean', default: false },
     headed: { type: 'boolean', default: false },
@@ -58,8 +60,9 @@ if (opt.help || !opt.url) {
   --intro          Hook intro: random (default), none, or ${VARIANTS.join(' | ')}
   --intro-seconds  Intro length (default 5)
   --highlights     Number of highlight clips between intro and game, 0 = off (default 4)
-  --highlight-before / --highlight-after  Seconds kept around each KO (default 4 / 1)
-  --lang           Intro text language: en | vi (default en)
+  --highlight-before / --highlight-after  Seconds kept around each KO, always inside the fight (default 5 / 1)
+  --lang           Intro / match card / highlight text language: en | vi (default en)
+  --match-card     Seconds of the pre-match card (match number, stage, fighters), 0 = off (default 3.4)
   --crf            x264 quality, lower = better (default 24, or 20 from 1080p up)
   --full-page      Record the whole page instead of only the arena
   --headed         Show the browser window`);
@@ -85,6 +88,7 @@ const outroChoice = opt.outro === 'none' ? null : pickOutro(opt.outro);
 const outroSeconds = Math.max(5, Number(opt['outro-seconds']));
 const endWait = Math.max(0, Number(opt['end-wait']));
 const loadTimeoutMs = Math.max(0, Number(opt['load-timeout'])) * 1000;
+const matchCardSeconds = Math.max(0, Number(opt['match-card']));
 const highlightCount = Math.max(0, Math.floor(Number(opt.highlights)));
 const tmpDir = resolve('.tmp-video');
 mkdirSync(dirname(outFile), { recursive: true });
@@ -124,10 +128,13 @@ async function trimTransparent(b64) {
   const pad = 4;
   minX = Math.max(0, minX - pad); minY = Math.max(0, minY - pad);
   maxX = Math.min(c.width - 1, maxX + pad); maxY = Math.min(c.height - 1, maxY + pad);
+  const sw = maxX - minX + 1;
+  const sh = maxY - minY + 1;
+  const k = Math.min(1, 520 / sh);
   const o = document.createElement('canvas');
-  o.width = maxX - minX + 1;
-  o.height = maxY - minY + 1;
-  o.getContext('2d').drawImage(c, minX, minY, o.width, o.height, 0, 0, o.width, o.height);
+  o.width = Math.max(1, Math.round(sw * k));
+  o.height = Math.max(1, Math.round(sh * k));
+  o.getContext('2d').drawImage(c, minX, minY, sw, sh, 0, 0, o.width, o.height);
   return o.toDataURL('image/png').split(',')[1];
 }
 
@@ -289,6 +296,12 @@ await page.addStyleTag({
     /* before the tournament starts the stage shows setup hints */
     body:not(.vid-live) #stage .hud { display: none !important; }
     .vid-live #stage .hud { display: none !important; }
+    /* character speech (top left): sized from the frame height, so it grows with 1080p / 2K output */
+    #speech-box { left: max(14px, 1.6vh) !important; top: max(68px, 9vh) !important; width: min(36%, max(240px, 44vh)) !important; }
+    #speech-list { gap: max(6px, .9vh) !important; }
+    #speech-box .sp { font-size: max(12px, 2.3vh) !important; line-height: 1.25 !important; padding: .55vh 1.2vh !important;
+      border-left-width: max(3px, .5vh) !important; border-radius: 1vh !important; background: rgba(8,12,20,.82) !important; -webkit-line-clamp: 3 !important; }
+    #speech-box .sp b { font-size: max(11px, 2vh) !important; margin-right: .8vh !important; }
   `,
 });
 if (!opt['full-page']) {
@@ -315,6 +328,29 @@ await page.evaluate((speed) => {
   if (s) { s.value = String(speed); s.dispatchEvent(new Event('input', { bubbles: true })); s.dispatchEvent(new Event('change', { bubbles: true })); }
 }, opt.speed);
 
+const shuffled = (a) => a.map((v) => [Math.random(), v]).sort((x, y) => x[0] - y[0]).map((x) => x[1]);
+
+// Decide every fighter's look up front (character, weapon, shield), so portraits can be captured before
+// the tournament starts and the pre-match cards / intro have a real picture for each fighter.
+const catalogPaths = await page.evaluate(() => {
+  const c = window.__rig.catalog();
+  return { char: c.char.map((i) => i.path), weapon: c.weapon.map((i) => i.path), shield: c.shield.map((i) => i.path) };
+});
+const pickList = [];
+{
+  let pool = shuffled(catalogPaths.char);
+  for (let i = 0; i < fighters; i++) {
+    if (i > 0 && i % pool.length === 0) pool = shuffled(pool);
+    pickList.push({
+      char: pool[i % pool.length],
+      weapon: catalogPaths.weapon.length ? catalogPaths.weapon[Math.floor(Math.random() * catalogPaths.weapon.length)] : null,
+      shield: catalogPaths.shield.length && Math.random() < 0.6 ? catalogPaths.shield[Math.floor(Math.random() * catalogPaths.shield.length)] : null,
+    });
+  }
+}
+log(`Capturing ${pickList.length} fighter portraits...`);
+const portraits = await capturePortraits(pickList);
+
 await page.evaluate((n) => {
   const sel = document.getElementById('tour-size');
   if (![...sel.options].some((o) => o.value === String(n))) {
@@ -325,28 +361,34 @@ await page.evaluate((n) => {
   sel.value = String(n);
   sel.dispatchEvent(new Event('change', { bubbles: true }));
 }, fighters);
+// The tournament just rolled its entrants; give each one the look that was photographed above.
+const entrantInfo = await page.evaluate((picks) => {
+  const t = window.__rig.tour;
+  const c = window.__rig.catalog();
+  const find = (k, p) => (p ? c[k].find((i) => i.path === p) || null : null);
+  return t.entrants.map((e, i) => {
+    const p = picks[i];
+    if (p) {
+      e.char = find('char', p.char) || e.char;
+      e.weapon = find('weapon', p.weapon);
+      e.shield = find('shield', p.shield);
+    }
+    return { id: e.id, name: e.name };
+  });
+}, pickList);
+const portraitById = Object.fromEntries(entrantInfo.map((e) => [e.id, portraits[e.id] ?? null]));
 // Let the first tournament frame render, then cut everything recorded before it.
 await page.waitForFunction(() => {
   const p = document.getElementById('tour-panel');
   return !!p && !p.hidden;
 }, null, { timeout: 30_000 }).catch(() => {});
 await page.waitForTimeout(500);
+if (matchCardSeconds > 0) await installMatchCard(page, { portraits: portraitById, lang: opt.lang, seconds: matchCardSeconds });
 await page.evaluate(() => document.body.classList.add('vid-live'));
 const trimSeconds = (Date.now() - recordingStartedAt) / 1000;
 log(`Tournament of ${fighters} fighters started. Recording... (trimming first ${trimSeconds.toFixed(1)}s)`);
 
-const shuffled = (a) => a.map((v) => [Math.random(), v]).sort((x, y) => x[0] - y[0]).map((x) => x[1]);
-const rawFighters = await page.evaluate(() => {
-  const r = window.__rig;
-  const t = r.tour;
-  const path = (x) => (x && x.path) || null;
-  if (t && t.entrants && t.entrants.length) {
-    return t.entrants.map((e) => ({ name: e.name, char: path(e.char), weapon: path(e.weapon), shield: path(e.shield) }));
-  }
-  return r.catalog().char.map((c) => ({ name: c.name, char: path(c) }));
-});
-const fighterPool = rawFighters.filter((f) => f.name);
-const introFighters = (fighterPool.length >= fighters ? fighterPool : shuffled(fighterPool)).slice(0, fighters);
+const introFighters = entrantInfo.map((e) => ({ id: e.id, name: e.name, img: portraitById[e.id] }));
 
 // Match-end moments (the game logs "<match>: X wins") used to cut the highlight clips.
 const events = [];
@@ -361,8 +403,44 @@ const maxMs = Number(opt['max-minutes']) * 60_000;
 let sawPapers = false;
 let lastPaperAt = 0;
 let mainEnd = null;
+
+// Per-match fight timeline: when the real fight began, when the KO happened, and how close it was.
+const matches = new Map();
+function trackMatch(m, now) {
+  if (!m) return;
+  let rec = matches.get(m.no);
+  if (!rec) {
+    rec = { no: m.no, label: m.label, kind: m.kind, roundName: m.roundName, g: m.g, isFinal: m.isFinal, names: m.names, seen: now, fightStart: null, ko: null, winner: null, minHp: m.hp.map(() => 1) };
+    matches.set(m.no, rec);
+  }
+  if (rec.ko !== null && !m.over) { rec.ko = null; rec.fightStart = null; rec.winner = null; rec.minHp = m.hp.map(() => 1); }
+  if (m.go && !m.over && rec.fightStart === null) rec.fightStart = now;
+  if (!m.over) m.hp.forEach((v, i) => { if (v < rec.minHp[i]) rec.minHp[i] = v; });
+  if (m.over && rec.ko === null && rec.fightStart !== null) { rec.ko = now; rec.winner = m.winner; }
+}
 for (;;) {
   const snap = await page.evaluate(() => {
+    const matchSnap = () => {
+      const r = window.__rig;
+      const t = r.tour;
+      if (!t || !t.cur) return null;
+      const d = r.duel;
+      const k = t.cur.ids.length;
+      return {
+        no: t.matchNo,
+        label: t.cur.label || '',
+        kind: t.cur.kind,
+        roundName: t.roundName,
+        g: t.cur.g,
+        isFinal: !!t.isFinal,
+        names: t.cur.ids.map((e) => e.name),
+        go: !d.intro || !!d.intro.go,
+        over: !!d.over,
+        winner: d.winner && d.winner.entrant ? d.winner.entrant.name : null,
+        hp: r.app.fighters.slice(0, k).map((p) => (p.maxHp ? Math.max(0, p.hp) / p.maxHp : 1)),
+        card: !!document.getElementById('vid-match'),
+      };
+    };
     const c = document.getElementById('tour-champ');
     const t = window.__rig.tour;
     return {
@@ -371,9 +449,11 @@ for (;;) {
       papers: !!document.getElementById('news-wall'),
       log: t && t.log ? t.log.slice() : null,
       panel: document.getElementById('tour-panel')?.innerText ?? '',
+      match: matchSnap(),
     };
   });
   const now = (Date.now() - recordingStartedAt) / 1000;
+  trackMatch(snap.match, now);
   if (snap.log) {
     for (; seenLog < snap.log.length; seenLog++) {
       const line = snap.log[seenLog];
@@ -388,7 +468,8 @@ for (;;) {
   // No newspapers in this final (the game sometimes has no reporters): stop right after the champion is decided.
   if (snap.champion && !snap.papers) { mainEnd = (sawPapers ? lastPaperAt : now) + endWait; break; }
   const elapsed = Date.now() - startedAt;
-  if (shots.length < 8 && elapsed - lastShotAt > 3500 && elapsed > 2500) {
+  // Arena frames for the intro backgrounds: only real fighting, never a card, bracket or newspaper scene.
+  if (shots.length < 8 && elapsed - lastShotAt > 3500 && elapsed > 2500 && snap.match && snap.match.go && !snap.match.over && !snap.match.card) {
     lastShotAt = elapsed;
     shots.push((await page.screenshot({ type: 'jpeg', quality: 88 })).toString('base64'));
   }
@@ -398,7 +479,7 @@ for (;;) {
     const txt = await page.evaluate(() => document.getElementById('tour-panel')?.innerText?.slice(0, 80) ?? '');
     log(`Recording ${(elapsed / 60_000).toFixed(1)} min`, txt.replace(/\s+/g, ' '));
   }
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(250);
 }
 const nowSeconds = () => (Date.now() - recordingStartedAt) / 1000;
 if (mainEnd === null) mainEnd = nowSeconds();
@@ -408,7 +489,11 @@ if (remaining > 0) await page.waitForTimeout(remaining * 1000);
 mainEnd = Math.min(mainEnd, nowSeconds());
 
 const recordingEndedAt = Date.now();
-const championName = await page.evaluate(() => (window.__rig && window.__rig.tour && window.__rig.tour.champion && window.__rig.tour.champion.name) || null);
+const championInfo = await page.evaluate(() => {
+  const c = window.__rig && window.__rig.tour && window.__rig.tour.champion;
+  return c ? { id: c.id, name: c.name } : null;
+});
+const championName = championInfo ? championInfo.name : null;
 const audioLog = await page.evaluate(() => window.__audioLog || []);
 const recordingSeconds = (recordingEndedAt - recordingStartedAt) / 1000;
 
@@ -480,9 +565,7 @@ async function recordCard(html, seconds, dirName) {
 
 let intro = null;
 if (introChoice) {
-  log(`Capturing ${introFighters.length} fighter portraits...`);
-  const portraits = await capturePortraits(introFighters);
-  const introWithImages = introFighters.map((f, i) => ({ ...f, img: portraits[i] }));
+    const introWithImages = introFighters;
   log(`Rendering intro "${introChoice}" (${introSeconds}s)...`);
   intro = await recordCard(
     buildIntroHtml({ variant: introChoice, fighters: introWithImages, shots, lang: opt.lang, seconds: introSeconds }),
@@ -493,26 +576,52 @@ if (introChoice) {
 
 let outro = null;
 if (outroChoice) {
-  let champion = championName ? { name: championName, img: null } : null;
-  if (champion && (outroChoice === 'champion' || outroChoice === 'channel')) {
-    const match = fighterPool.find((f) => f.name === championName);
-    if (match) {
-      const [img] = await capturePortraits([match]);
-      champion = { name: championName, img };
-    }
-  }
+  const champion = championInfo ? { name: championInfo.name, img: portraitById[championInfo.id] ?? null } : null;
   log(`Rendering outro "${outroChoice}" (${outroSeconds}s)...`);
   outro = await recordCard(buildOutroHtml({ variant: outroChoice, shots, champion }), outroSeconds, 'outro');
 }
-await browser.close();
-
-// The last "wins" is the final, which would spoil the champion, so it is never a highlight.
+// Highlights are cut only from inside real fights: from (at most) `before` seconds ahead of the KO, never
+// earlier than the start of the fight or the end of the pre-match card, up to `after` seconds past the KO.
+// Nothing before the fight (cards, walk-in) or after it (bracket, results) can end up in a clip.
+// The final is never used, so the champion is not spoiled.
 const before = Number(opt['highlight-before']);
 const after = Number(opt['highlight-after']);
-const candidates = events.slice(0, -1).filter((e) => e.t - before > trimSeconds + 0.5);
-const lastTwo = candidates.slice(-2);
-const picked = [...lastTwo, ...shuffled(candidates.slice(0, -2))].slice(0, highlightCount).sort((a, b) => a.t - b.t);
-log(`Highlights: ${picked.length} clip(s)`, picked.map((p) => p.line).join(' | '));
+const cardGuard = matchCardSeconds + 0.5;
+const clipCandidates = [];
+for (const m of matches.values()) {
+  if (m.isFinal || m.ko === null || m.fightStart === null) continue;
+  const start = Math.max(m.ko - before, m.fightStart + 0.3, m.seen + cardGuard, trimSeconds + 0.5);
+  const end = m.ko + after;
+  if (end - start < 2.5) continue;
+  const wi = m.names.indexOf(m.winner);
+  const closeness = wi >= 0 ? 1 - m.minHp[wi] : 0;
+  clipCandidates.push({ ...m, start, end, score: closeness + Math.random() * 0.35 });
+}
+const picked = clipCandidates.sort((a, b) => b.score - a.score).slice(0, highlightCount).sort((a, b) => a.start - b.start);
+log(`Highlights: ${picked.length} clip(s)`, picked.map((p) => `${p.label}: ${p.names.join(' vs ')}`).join(' | '));
+
+const FXT = textFor(opt.lang);
+const IT = introText(opt.lang);
+const HL_CARD_SECONDS = 2.2;
+const MAIN_CARD_SECONDS = 1.8;
+let hlAssets = null;
+let hlCard = null;
+let mainCard = null;
+if (picked.length) {
+  hlAssets = await renderHighlightAssets(browser, {
+    W: outW,
+    H: outHeight,
+    dir: tmpDir,
+    plates: picked.map((m, i) => ({
+      title: `${FXT.highlight} ${i + 1}/${picked.length}`,
+      line1: m.names.length === 2 ? m.names.join(`   ${FXT.vs}   `) : m.names.join('  ·  '),
+      line2: stageLabel(FXT, m),
+    })),
+  });
+  hlCard = await recordCard(buildTitleCardHtml({ title: IT.hlTitle, sub: IT.hlSub, shots, seconds: HL_CARD_SECONDS }), HL_CARD_SECONDS, 'hlcard');
+  mainCard = await recordCard(buildTitleCardHtml({ title: IT.mainTitle, sub: IT.mainSub, shots, seconds: MAIN_CARD_SECONDS, tone: 'red' }), MAIN_CARD_SECONDS, 'maincard');
+}
+await browser.close();
 
 if (!existsSync(videoPath) || statSync(videoPath).size === 0) {
   console.error('No video was recorded.');
@@ -578,18 +687,17 @@ const chains = [];
 const norm = `scale=${outW}:${outHeight}:flags=lanczos,setsar=1,fps=${opt.fps},format=yuv420p`;
 const normA = 'aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo';
 let inputCount = 0;
-// audio: 'silent' (needs a duration), 'game' (cut from the mixed game audio) or none.
-const addSegment = (file, start, duration, audio, fadeIn = 0, fadeOut = 0) => {
+// audio: 'silent' (needs a duration), 'game' (cut from the mixed game audio) or { wav }.
+// fx: { frame, plate } wraps the footage in the animated highlight frame (blurred backdrop, gold frame, title plate).
+const addSegment = (file, start, duration, audio, fadeIn = 0, fadeOut = 0, fx = null) => {
   const i = chains.length;
   const dur = ['-t', duration.toFixed(2)];
   const vIdx = inputCount++;
   inputs.push('-ss', start.toFixed(2), ...dur, '-i', file);
-  const fadeChain = (v, a) => [
-    fadeIn ? `${v}=t=in:st=0:d=${fadeIn}` : '',
-    fadeOut ? `${v}=t=out:st=${(duration - fadeOut).toFixed(2)}:d=${fadeOut}` : '',
-  ].filter(Boolean).map((s) => `,${s.replace(/^[a-z]+/, a)}`).join('');
-  const fades = fadeChain('fade', 'fade');
-  let chain = `[${vIdx}:v]setpts=PTS-STARTPTS,${norm}${fades}[v${i}]`;
+  const fadeChain = (name) => [
+    fadeIn ? `${name}=t=in:st=0:d=${fadeIn}` : '',
+    fadeOut ? `${name}=t=out:st=${(duration - fadeOut).toFixed(2)}:d=${fadeOut}` : '',
+  ].filter(Boolean).map((f) => `,${f}`).join('');
   const aIdx = inputCount++;
   if (audio === 'silent') {
     inputs.push('-f', 'lavfi', '-t', duration.toFixed(2), '-i', 'anullsrc=r=44100:cl=stereo');
@@ -598,15 +706,26 @@ const addSegment = (file, start, duration, audio, fadeIn = 0, fadeOut = 0) => {
   } else {
     inputs.push('-ss', start.toFixed(2), ...dur, '-i', gameAudioPath ?? file);
   }
-  const aFades = fadeChain('afade', 'afade');
-  chain += `;[${aIdx}:a]asetpts=PTS-STARTPTS,${normA}${aFades}[a${i}]`;
+  let chain;
+  if (fx) {
+    const frameIdx = inputCount++;
+    inputs.push('-loop', '1', '-framerate', String(opt.fps), '-t', duration.toFixed(2), '-i', fx.frame);
+    const plateIdx = inputCount++;
+    inputs.push('-loop', '1', '-framerate', String(opt.fps), '-t', duration.toFixed(2), '-i', fx.plate);
+    chain = highlightChain({ i, vIdx, frameIdx, plateIdx, outW, outH: outHeight, norm, fades: fadeChain('fade') });
+  } else {
+    chain = `[${vIdx}:v]setpts=PTS-STARTPTS,${norm}${fadeChain('fade')}[v${i}]`;
+  }
+  chain += `;[${aIdx}:a]asetpts=PTS-STARTPTS,${normA}${fadeChain('afade')}[a${i}]`;
   chains.push(chain);
 };
 const silentOrGame = gameAudioPath ? 'game' : 'silent';
 const introAudio = intro ? { wav: makeIntroAudio(join(audioDir, 'intro.wav'), introSeconds) } : null;
 const outroAudio = outro ? { wav: makeOutroAudio(join(audioDir, 'outro.wav'), outroSeconds) } : null;
 if (intro) addSegment(intro.path, intro.trim, introSeconds, introAudio);
-for (const e of picked) addSegment(videoPath, e.t - before, before + after, silentOrGame, 0.15, 0.15);
+if (hlCard) addSegment(hlCard.path, hlCard.trim, HL_CARD_SECONDS, { wav: makeIntroAudio(join(audioDir, 'highlights.wav'), HL_CARD_SECONDS) }, 0, 0.15);
+picked.forEach((m, i) => addSegment(videoPath, m.start, m.end - m.start, silentOrGame, 0.2, 0.2, { frame: hlAssets.frame, plate: hlAssets.plates[i] }));
+if (mainCard) addSegment(mainCard.path, mainCard.trim, MAIN_CARD_SECONDS, 'silent', 0.15, 0.2);
 // Main game footage runs to the end of the final's newspaper scene and fades out into the outro.
 addSegment(videoPath, trimSeconds, Math.max(1, mainEnd - trimSeconds), silentOrGame, 0, 0.6);
 if (outro) addSegment(outro.path, outro.trim, outroSeconds, outroAudio, 0.5, 0.5);
