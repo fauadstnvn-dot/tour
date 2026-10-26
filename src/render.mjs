@@ -438,10 +438,22 @@ if (!sceneCount && !opt['allow-no-scenery']) {
   await browser.close().catch(() => {});
   process.exit(1);
 }
+// Drive the game's own setScenery() directly and AWAIT the promise it returns,
+// so a pick is only reported once the page confirms that scene is current.
+// (Selecting via the dropdown happens too, so the game's per-match random
+// roll stays off, but the renderer's confirmation no longer depends on the
+// synthetic change event chain alone.)
+async function driveScenery(id) {
+  const attempt = page.evaluate((sceneId) => {
+    if (window.__rig && typeof window.__rig.setScenery === 'function') {
+      return window.__rig.setScenery(sceneId).then((sc) => (sc ? sc.id : null));
+    }
+    return 'no-api';
+  }, id).catch((e) => 'error:' + String(e && e.message || e).split('\n')[0]);
+  return Promise.race([attempt, page.waitForTimeout(45_000).then(() => 'timeout')]);
+}
 // Pick scenery through the game's own dropdown, one scene per match, so the recorder does not depend
-// on the game's random roll. Waits until that scene is actually on stage (the
-// page reports its current scenery, or a scenery image is in the DOM), so a
-// match never starts while its layers are still loading - or failed.
+// on the game's random roll. Returns the chosen scene, or null when nothing could be selected.
 async function pickScenery() {
   const picked = await page.evaluate(() => {
     const s = document.getElementById('scenery');
@@ -453,29 +465,29 @@ async function pickScenery() {
     return { id: o.value, name: o.textContent };
   });
   if (!picked) return null;
-  await page
-    .waitForFunction((id) => {
-      const cur = window.__rig && typeof window.__rig.currentScenery === 'function' ? window.__rig.currentScenery() : null;
-      if (cur) return cur.id === id;
-      return !!document.querySelector('image[href*="scenery-file"], image[href^="blob:"]');
-    }, picked.id, { timeout: 20_000 })
-    .catch(() => {});
+  const confirmed = await driveScenery(picked.id);
+  if (confirmed === picked.id) {
+    log(`Scenery drive: ${picked.id} confirmed current by the page.`);
+  } else {
+    log(`Scenery drive: ${picked.id} NOT confirmed (page answered: ${confirmed}).`);
+    const dbg = await page.evaluate(() => ({
+      state: window.__sceneryState ? { status: window.__sceneryState.status, current: window.__sceneryState.current, failedLayers: window.__sceneryState.failedLayers, lastError: window.__sceneryState.lastError } : null,
+      current: window.__rig && window.__rig.currentScenery ? (window.__rig.currentScenery() || {}).id || null : 'n/a',
+      select: document.getElementById('scenery') ? document.getElementById('scenery').value : 'n/a',
+    })).catch(() => null);
+    log('Scenery debug:', JSON.stringify(dbg));
+  }
   return picked;
 }
 if (sceneCount) {
   log(`Scenery: ${sceneCount} scenes available from the host.`);
   const first = await pickScenery();
   log(`Scenery selected: ${first ? `${first.name} (${first.id})` : 'none'}`);
-  const drawn = await page
-    .waitForFunction(() => !!document.querySelector('image[href*="scenery-file"], image[href^="blob:"]'), null, { timeout: 45_000 })
-    .then(() => true)
-    .catch(() => false);
-  if (drawn) {
-    log('Scenery layers are on stage.');
-  } else {
-    const seen = await page.evaluate(() => performance.getEntriesByType('resource').filter((e) => e.name.includes('scenery-file')).map((e) => `${e.responseStatus || '?'} ${e.name.slice(-60)}`));
-    log(`WARNING: scenery was selected but its layers did not appear on stage within 45s. Browser saw ${seen.length} scenery file requests${seen.length ? `: ${seen.slice(0, 3).join(' | ')}` : ''}.`);
-  }
+  // No DOM check here: before the tournament the page sits in 1-fighter
+  // viewer mode, whose stage shows no scenery or stands at all by design, so
+  // waiting for scenery <image> elements here only ever produced a false
+  // 45 s alarm. The stage is verified during the first fight (see the
+  // recording loop), which is also when it matters for the video.
 } else {
   log(`WARNING: the host returned no scenery (list HTTP ${sceneryStats.list ?? 'never requested'}); the background will be plain stands (--allow-no-scenery).`);
 }
@@ -522,7 +534,7 @@ const introFighters = entrantInfo.map((e) => ({ id: e.id, name: e.name, img: por
 // Match-end moments (the game logs "<match>: X wins") used to cut the highlight clips.
 const events = [];
 let seenLog = 0;
-let sceneryChecked = false;
+let sceneryVerified = false;
 let lastSceneryMatch = null;
 let lastPanel = '';
 const shots = [];
@@ -602,10 +614,38 @@ for (;;) {
     }
     lastSceneryMatch = snap.match.no;
   }
-  if (!sceneryChecked && snap.match && now - trimSeconds > 15) {
-    sceneryChecked = true;
-    const onStage = await page.evaluate(() => document.querySelectorAll('image[href*="scenery-file"], image[href^="blob:"]').length);
-    log(onStage ? `Scenery check: ${onStage} scenery images on stage during the match.` : `WARNING: no scenery images on stage during the match (${sceneryStats.files} scenery files requested, ${sceneryStats.failed} failed, ${sceneryStats.badType} with a wrong content-type).`);
+  if (!sceneryVerified && sceneCount && snap.match && snap.match.go) {
+    sceneryVerified = true;
+    const checkStage = async () => page.evaluate(() => ({
+      current: window.__rig && window.__rig.currentScenery ? (window.__rig.currentScenery() || {}).id || null : 'n/a',
+      images: [...document.querySelectorAll('image')].filter((e) => { const h = e.getAttribute('href') || ''; return h.includes('scenery-file') || h.startsWith('blob:'); }).length,
+      hrefs: [...document.querySelectorAll('image')].slice(0, 4).map((e) => (e.getAttribute('href') || '').slice(0, 60)),
+    })).catch(() => null);
+    let st = await checkStage();
+    log(`Scenery stage check (match ${snap.match.no}, fighting): current=${st ? st.current : '?'} sceneryImages=${st ? st.images : '?'} sampleHrefs=${st ? JSON.stringify(st.hrefs) : '?'}`);
+    try { await page.screenshot({ path: join(dirname(outFile), 'debug-stage.png') }); log('Saved output/debug-stage.png for visual checking.'); } catch {}
+    if (st && !st.images) {
+      log('Scenery is NOT on the fighting stage - driving it again and probing one layer...');
+      const next = await pickScenery();
+      log(`Scenery re-drive: ${next ? next.name : 'none'}`);
+      await page.waitForTimeout(6000);
+      st = await checkStage();
+      log(`Scenery stage re-check: current=${st ? st.current : '?'} sceneryImages=${st ? st.images : '?'}`);
+      const probe = await page.evaluate(async () => {
+        const out = { state: window.__sceneryState ? { status: window.__sceneryState.status, current: window.__sceneryState.current, failedLayers: window.__sceneryState.failedLayers, lastError: window.__sceneryState.lastError } : null };
+        try {
+          const defs = window.__rig.sceneryDefs();
+          const firstDef = defs[Object.keys(defs)[0]];
+          const url = firstDef && firstDef.layers && (firstDef.layers.sky || Object.values(firstDef.layers)[0]);
+          out.url = url;
+          try { const r = await fetch(url, { cache: 'no-store' }); const b = await r.blob(); out.fetch = { status: r.status, type: b.type, size: b.size }; } catch (e) { out.fetch = { error: String(e) }; }
+          out.image = await new Promise((res) => { const im = new Image(); const to = setTimeout(() => res({ timeout: true }), 15000); im.onload = () => { clearTimeout(to); res({ ok: true, w: im.naturalWidth, h: im.naturalHeight }); }; im.onerror = () => { clearTimeout(to); res({ error: true }); }; im.src = url + '&probe=' + Date.now(); });
+        } catch (e) { out.error = String((e && e.message) || e); }
+        return out;
+      }).catch((e) => ({ error: String((e && e.message) || e) }));
+      log('Scenery probe:', JSON.stringify(probe));
+      try { await page.screenshot({ path: join(dirname(outFile), 'debug-stage.png') }); } catch {}
+    }
   }
   if (videoLimitSeconds > 0 && now - trimSeconds >= videoLimitSeconds) {
     log(`Test length of ${opt['video-minutes']} min reached, cutting the tournament footage here.`);
