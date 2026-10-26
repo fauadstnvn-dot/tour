@@ -5,6 +5,7 @@ import { mkdirSync, readdirSync, rmSync, existsSync, statSync, writeFileSync } f
 import { join, resolve, dirname } from 'node:path';
 import { parseArgs } from 'node:util';
 import { buildIntroHtml, pickVariant, VARIANTS } from './intro.mjs';
+import { buildOutroHtml, pickOutro, OUTRO_VARIANTS } from './outro.mjs';
 
 const { values: opt } = parseArgs({
   options: {
@@ -16,7 +17,9 @@ const { values: opt } = parseArgs({
     speed: { type: 'string', default: '1' },
     'capture-height': { type: 'string', default: '480' },
     'max-minutes': { type: 'string', default: '60' },
-    'end-wait': { type: 'string', default: '8' },
+    'end-wait': { type: 'string', default: '0.6' },
+    outro: { type: 'string', default: 'random' },
+    'outro-seconds': { type: 'string', default: '6' },
     'load-timeout': { type: 'string', default: '120' },
     retries: { type: 'string', default: process.env.RETRIES ?? '5' },
     'retry-delay': { type: 'string', default: '10' },
@@ -45,7 +48,9 @@ if (opt.help || !opt.url) {
   --speed          Game speed slider 0.2 - 2 (default 1)
   --capture-height Browser capture height before downscale (default 480)
   --max-minutes    Abort after this many minutes of recording (default 60)
-  --end-wait       Seconds to keep recording after the champion appears (default 8)
+  --end-wait       Seconds kept after the newspaper scene of the final ends (default 0.6)
+  --outro          Like/share/subscribe outro: random (default), none, or ${OUTRO_VARIANTS.join(' | ')}
+  --outro-seconds  Outro length (default 6, minimum 5)
   --retries        Max attempts to load game data, reloading on failure (default 5)
   --retry-delay    Base seconds between reloads, grows per attempt (default 10)
   --intro          Hook intro: random (default), none, or ${VARIANTS.join(' | ')}
@@ -74,6 +79,9 @@ const outW = Math.round((outHeight * 16) / 9 / 2) * 2;
 const crf = opt.crf ?? (outHeight >= 1080 ? '20' : '24');
 const introChoice = opt.intro === 'none' ? null : pickVariant(opt.intro);
 const introSeconds = Math.max(2, Number(opt['intro-seconds']));
+const outroChoice = opt.outro === 'none' ? null : pickOutro(opt.outro);
+const outroSeconds = Math.max(5, Number(opt['outro-seconds']));
+const endWait = Math.max(0, Number(opt['end-wait']));
 const highlightCount = Math.max(0, Math.floor(Number(opt.highlights)));
 const tmpDir = resolve('.tmp-video');
 mkdirSync(dirname(outFile), { recursive: true });
@@ -341,12 +349,18 @@ let lastShotAt = 0;
 const startedAt = Date.now();
 let lastReport = 0;
 const maxMs = Number(opt['max-minutes']) * 60_000;
+// The recording ends with the newspapers about the winner of the final (the game's #news-wall).
+let sawPapers = false;
+let lastPaperAt = 0;
+let mainEnd = null;
 for (;;) {
   const snap = await page.evaluate(() => {
     const c = document.getElementById('tour-champ');
     const t = window.__rig.tour;
     return {
-      done: !!c && !c.hidden,
+      champion: !!(t && t.log && t.log.some((l) => /^CHAMPION/.test(l))) || (!!c && !c.hidden),
+      isFinal: !!(t && t.isFinal),
+      papers: !!document.getElementById('news-wall'),
       log: t && t.log ? t.log.slice() : null,
       panel: document.getElementById('tour-panel')?.innerText ?? '',
     };
@@ -361,7 +375,10 @@ for (;;) {
     events.push({ t: now, line: snap.panel });
   }
   lastPanel = snap.panel;
-  if (snap.done) break;
+  if (snap.isFinal && snap.papers) { sawPapers = true; lastPaperAt = now; }
+  if (sawPapers && !snap.papers) { mainEnd = lastPaperAt + endWait; break; }
+  // No newspapers in this final (the game sometimes has no reporters): stop right after the champion is decided.
+  if (snap.champion && !snap.papers) { mainEnd = (sawPapers ? lastPaperAt : now) + endWait; break; }
   const elapsed = Date.now() - startedAt;
   if (shots.length < 8 && elapsed - lastShotAt > 3500 && elapsed > 2500) {
     lastShotAt = elapsed;
@@ -375,10 +392,15 @@ for (;;) {
   }
   await page.waitForTimeout(500);
 }
-log('Champion crowned. Finishing...');
-await page.waitForTimeout(Number(opt['end-wait']) * 1000);
+const nowSeconds = () => (Date.now() - recordingStartedAt) / 1000;
+if (mainEnd === null) mainEnd = nowSeconds();
+log(sawPapers ? 'Final newspapers shown. Finishing the game footage...' : 'Champion decided. Finishing the game footage...');
+const remaining = mainEnd - nowSeconds();
+if (remaining > 0) await page.waitForTimeout(remaining * 1000);
+mainEnd = Math.min(mainEnd, nowSeconds());
 
 const recordingEndedAt = Date.now();
+const championName = await page.evaluate(() => (window.__rig && window.__rig.tour && window.__rig.tour.champion && window.__rig.tour.champion.name) || null);
 const audioLog = await page.evaluate(() => window.__audioLog || []);
 const recordingSeconds = (recordingEndedAt - recordingStartedAt) / 1000;
 
@@ -423,30 +445,50 @@ const mixable = instances.filter((i) => audioFiles.has(i.src));
 const videoPath = await page.video().path();
 await context.close();
 
+// Records a self-contained animated HTML card (intro / outro) and returns where its animation starts.
+async function recordCard(html, seconds, dirName) {
+  const ctx = await browser.newContext({
+    viewport: { width: capW, height: capH },
+    deviceScaleFactor: 1,
+    recordVideo: { dir: join(tmpDir, dirName), size: { width: capW, height: capH } },
+  });
+  const t0 = Date.now();
+  const p = await ctx.newPage();
+  await p.setContent(html, { waitUntil: 'load' });
+  await p.evaluate(() => document.fonts.ready);
+  const trim = (Date.now() - t0) / 1000 + 0.05;
+  await p.evaluate(() => window.__go());
+  await p.waitForTimeout(seconds * 1000 + 300);
+  const path = await p.video().path();
+  await ctx.close();
+  return { path, trim };
+}
+
 let intro = null;
 if (introChoice) {
   log(`Capturing ${introFighters.length} fighter portraits...`);
   const portraits = await capturePortraits(introFighters);
   const introWithImages = introFighters.map((f, i) => ({ ...f, img: portraits[i] }));
   log(`Rendering intro "${introChoice}" (${introSeconds}s)...`);
-  const introCtx = await browser.newContext({
-    viewport: { width: capW, height: capH },
-    deviceScaleFactor: 1,
-    recordVideo: { dir: join(tmpDir, 'intro'), size: { width: capW, height: capH } },
-  });
-  const t0 = Date.now();
-  const ip = await introCtx.newPage();
-  await ip.setContent(
+  intro = await recordCard(
     buildIntroHtml({ variant: introChoice, fighters: introWithImages, shots, lang: opt.lang, seconds: introSeconds }),
-    { waitUntil: 'load' },
+    introSeconds,
+    'intro',
   );
-  await ip.evaluate(() => document.fonts.ready);
-  const introTrim = (Date.now() - t0) / 1000 + 0.05;
-  await ip.evaluate(() => window.__go());
-  await ip.waitForTimeout(introSeconds * 1000 + 300);
-  const introPath = await ip.video().path();
-  await introCtx.close();
-  intro = { path: introPath, trim: introTrim };
+}
+
+let outro = null;
+if (outroChoice) {
+  let champion = championName ? { name: championName, img: null } : null;
+  if (champion && (outroChoice === 'champion' || outroChoice === 'channel')) {
+    const match = fighterPool.find((f) => f.name === championName);
+    if (match) {
+      const [img] = await capturePortraits([match]);
+      champion = { name: championName, img };
+    }
+  }
+  log(`Rendering outro "${outroChoice}" (${outroSeconds}s)...`);
+  outro = await recordCard(buildOutroHtml({ variant: outroChoice, shots, champion }), outroSeconds, 'outro');
 }
 await browser.close();
 
@@ -523,12 +565,16 @@ const norm = `scale=${outW}:${outHeight}:flags=lanczos,setsar=1,fps=${opt.fps},f
 const normA = 'aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo';
 let inputCount = 0;
 // audio: 'silent' (needs a duration), 'game' (cut from the mixed game audio) or none.
-const addSegment = (file, start, duration, fade, audio) => {
+const addSegment = (file, start, duration, audio, fadeIn = 0, fadeOut = 0) => {
   const i = chains.length;
-  const dur = duration ? ['-t', duration.toFixed(2)] : [];
+  const dur = ['-t', duration.toFixed(2)];
   const vIdx = inputCount++;
   inputs.push('-ss', start.toFixed(2), ...dur, '-i', file);
-  const fades = fade ? `,fade=t=in:st=0:d=0.15,fade=t=out:st=${(duration - 0.15).toFixed(2)}:d=0.15` : '';
+  const fadeChain = (v, a) => [
+    fadeIn ? `${v}=t=in:st=0:d=${fadeIn}` : '',
+    fadeOut ? `${v}=t=out:st=${(duration - fadeOut).toFixed(2)}:d=${fadeOut}` : '',
+  ].filter(Boolean).map((s) => `,${s.replace(/^[a-z]+/, a)}`).join('');
+  const fades = fadeChain('fade', 'fade');
   let chain = `[${vIdx}:v]setpts=PTS-STARTPTS,${norm}${fades}[v${i}]`;
   const aIdx = inputCount++;
   if (audio === 'silent') {
@@ -536,14 +582,16 @@ const addSegment = (file, start, duration, fade, audio) => {
   } else {
     inputs.push('-ss', start.toFixed(2), ...dur, '-i', gameAudioPath ?? file);
   }
-  const aFades = fade ? `,afade=t=in:st=0:d=0.15,afade=t=out:st=${(duration - 0.15).toFixed(2)}:d=0.15` : '';
+  const aFades = fadeChain('afade', 'afade');
   chain += `;[${aIdx}:a]asetpts=PTS-STARTPTS,${normA}${aFades}[a${i}]`;
   chains.push(chain);
 };
 const silentOrGame = gameAudioPath ? 'game' : 'silent';
-if (intro) addSegment(intro.path, intro.trim, introSeconds, false, 'silent');
-for (const e of picked) addSegment(videoPath, e.t - before, before + after, true, silentOrGame);
-addSegment(videoPath, trimSeconds, 0, false, silentOrGame);
+if (intro) addSegment(intro.path, intro.trim, introSeconds, 'silent');
+for (const e of picked) addSegment(videoPath, e.t - before, before + after, silentOrGame, 0.15, 0.15);
+// Main game footage runs to the end of the final's newspaper scene and fades out into the outro.
+addSegment(videoPath, trimSeconds, Math.max(1, mainEnd - trimSeconds), silentOrGame, 0, 0.6);
+if (outro) addSegment(outro.path, outro.trim, outroSeconds, 'silent', 0.5, 0.5);
 if (!gameAudioPath) log('No game audio captured; the video will be silent.');
 const labels = chains.map((_, i) => `[v${i}][a${i}]`).join('');
 const args = [
