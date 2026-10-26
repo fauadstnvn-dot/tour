@@ -76,6 +76,43 @@ is identical at any resolution. The character speech box (top left) is also size
 frame height, so it is larger at 1080p / 2K. Intro grids are fitted to the 16:9 frame, so
 no fighter card is cut off. Rendering at 1440p is slower and needs more CPU/RAM.
 
+## Scenery: why a video could come out with plain stands, and the fix
+
+Characters, skills and scenery all load from your host at record time. The host
+runs a bot shield that sometimes answers a request - far more often from
+GitHub's datacentre IPs than from a home browser - with **HTTP 200 and an HTML
+"please wait, your request is being verified" page** instead of the real
+content. For scenery that was fatal and silent:
+
+- the scenery **list** was fetched once; parsing the HTML as JSON failed inside
+  a swallowed `.catch(function () {})`, so the Scenery dropdown stayed empty;
+- each scenery **layer** was loaded once with the error swallowed, so a
+  "200 HTML" layer simply disappeared;
+- this renderer only counted HTTP status >= 400 as a failure, so it logged
+  "HTTP 200" and carried on, and after a 60 s wait it continued without
+  scenery for the whole tournament.
+
+Fixed on both sides - upload the matching `index.php` together with this
+renderer:
+
+- `index.php` validates that the list really is JSON and retries it (up to 6
+  attempts), retries every layer (up to 4), logs and counts failures, serves
+  layer URLs with the script name included, sends binary files before the
+  JSON header, and exposes `window.__rig.reloadScenery()` /
+  `window.__rig.currentScenery()`.
+- The renderer checks **content types**, not just status codes (a scenery
+  response that is not `application/json` / `image/*` is logged as failed),
+  retries the scenery load - in-page, then by reloading the game - and then
+  **fails the run** instead of silently producing a scenery-less video.
+  Pass `--allow-no-scenery` only if plain stands are acceptable.
+- The browser presents a normal Chrome user agent (no `HeadlessChrome`,
+  no `navigator.webdriver`), which the shield fingerprints.
+
+If runs still fail with "Scenery is required but the host returned none",
+the shield is challenging this runner persistently: on the host, whitelist
+the game folder / disable the verification page for `?api=` requests, or the
+renderer cannot get past it no matter how often it retries.
+
 ## GitHub Actions
 
 `Actions > Render tournament video > Run workflow`. Set the repository variable
