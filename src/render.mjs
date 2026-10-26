@@ -19,6 +19,7 @@ const { values: opt } = parseArgs({
     speed: { type: 'string', default: '1' },
     'capture-height': { type: 'string', default: '480' },
     'max-minutes': { type: 'string', default: '60' },
+    'video-minutes': { type: 'string', default: '0' },
     'end-wait': { type: 'string', default: '0.6' },
     outro: { type: 'string', default: 'random' },
     'outro-seconds': { type: 'string', default: '6' },
@@ -51,6 +52,7 @@ if (opt.help || !opt.url) {
   --speed          Game speed slider 0.2 - 2 (default 1)
   --capture-height Browser capture height before downscale (default 480)
   --max-minutes    Abort after this many minutes of recording (default 60)
+  --video-minutes  Cut the tournament footage to this many minutes, for quick tests (default 0 = full tournament)
   --end-wait       Seconds kept after the newspaper scene of the final ends (default 0.6)
   --outro          Like/share/subscribe outro: random (default), none, or ${OUTRO_VARIANTS.join(' | ')}
   --outro-seconds  Outro length (default 6, minimum 5)
@@ -399,6 +401,7 @@ let lastShotAt = 0;
 const startedAt = Date.now();
 let lastReport = 0;
 const maxMs = Number(opt['max-minutes']) * 60_000;
+const videoLimitSeconds = Math.max(0, Number(opt['video-minutes'])) * 60;
 // The recording ends with the newspapers about the winner of the final (the game's #news-wall).
 let sawPapers = false;
 let lastPaperAt = 0;
@@ -463,6 +466,11 @@ for (;;) {
     events.push({ t: now, line: snap.panel });
   }
   lastPanel = snap.panel;
+  if (videoLimitSeconds > 0 && now - trimSeconds >= videoLimitSeconds) {
+    log(`Test length of ${opt['video-minutes']} min reached, cutting the tournament footage here.`);
+    mainEnd = now;
+    break;
+  }
   if (snap.isFinal && snap.papers) { sawPapers = true; lastPaperAt = now; }
   if (sawPapers && !snap.papers) { mainEnd = lastPaperAt + endWait; break; }
   // No newspapers in this final (the game sometimes has no reporters): stop right after the champion is decided.
