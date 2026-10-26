@@ -6,6 +6,7 @@ import { join, resolve, dirname } from 'node:path';
 import { parseArgs } from 'node:util';
 import { buildIntroHtml, pickVariant, VARIANTS } from './intro.mjs';
 import { buildOutroHtml, pickOutro, OUTRO_VARIANTS } from './outro.mjs';
+import { makeIntroAudio, makeOutroAudio } from './sfx.mjs';
 
 const { values: opt } = parseArgs({
   options: {
@@ -579,6 +580,8 @@ const addSegment = (file, start, duration, audio, fadeIn = 0, fadeOut = 0) => {
   const aIdx = inputCount++;
   if (audio === 'silent') {
     inputs.push('-f', 'lavfi', '-t', duration.toFixed(2), '-i', 'anullsrc=r=44100:cl=stereo');
+  } else if (typeof audio === 'object') {
+    inputs.push('-t', duration.toFixed(2), '-i', audio.wav);
   } else {
     inputs.push('-ss', start.toFixed(2), ...dur, '-i', gameAudioPath ?? file);
   }
@@ -587,11 +590,13 @@ const addSegment = (file, start, duration, audio, fadeIn = 0, fadeOut = 0) => {
   chains.push(chain);
 };
 const silentOrGame = gameAudioPath ? 'game' : 'silent';
-if (intro) addSegment(intro.path, intro.trim, introSeconds, 'silent');
+const introAudio = intro ? { wav: makeIntroAudio(join(audioDir, 'intro.wav'), introSeconds) } : null;
+const outroAudio = outro ? { wav: makeOutroAudio(join(audioDir, 'outro.wav'), outroSeconds) } : null;
+if (intro) addSegment(intro.path, intro.trim, introSeconds, introAudio);
 for (const e of picked) addSegment(videoPath, e.t - before, before + after, silentOrGame, 0.15, 0.15);
 // Main game footage runs to the end of the final's newspaper scene and fades out into the outro.
 addSegment(videoPath, trimSeconds, Math.max(1, mainEnd - trimSeconds), silentOrGame, 0, 0.6);
-if (outro) addSegment(outro.path, outro.trim, outroSeconds, 'silent', 0.5, 0.5);
+if (outro) addSegment(outro.path, outro.trim, outroSeconds, outroAudio, 0.5, 0.5);
 if (!gameAudioPath) log('No game audio captured; the video will be silent.');
 const labels = chains.map((_, i) => `[v${i}][a${i}]`).join('');
 const args = [
