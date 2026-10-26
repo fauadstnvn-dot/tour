@@ -53,11 +53,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Install ffmpeg and fonts (cached)
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: ffmpeg fonts-noto-core fonts-noto-ui-core fonts-dejavu-core
-          version: 1.0
+      - name: Install ffmpeg and fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-noto-core fonts-noto-ui-core fonts-dejavu-core
+          ffmpeg -version | head -1
       - name: Cache npm
         uses: actions/cache@v4
         with:
