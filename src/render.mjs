@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
-import { mkdirSync, readdirSync, rmSync, existsSync, statSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { parseArgs } from 'node:util';
 import { buildIntroHtml, pickVariant, VARIANTS } from './intro.mjs';
@@ -178,6 +178,32 @@ const context = await browser.newContext({
   deviceScaleFactor: 1,
   recordVideo: { dir: tmpDir, size: { width: capW, height: capH } },
 });
+// Playwright's recordVideo has no sound. The game plays every sound through HTMLMediaElement
+// (music and skill mp3), so each play/stop is logged here with a timestamp and mixed later.
+await context.addInitScript(() => {
+  const log = (window.__audioLog = []);
+  const ids = new WeakMap();
+  let next = 1;
+  const idOf = (el) => {
+    if (!ids.has(el)) ids.set(el, next++);
+    return ids.get(el);
+  };
+  const proto = HTMLMediaElement.prototype;
+  const origPlay = proto.play;
+  const origPause = proto.pause;
+  proto.play = function (...args) {
+    const src = this.currentSrc || this.src;
+    if (src) log.push({ k: 'play', id: idOf(this), t: Date.now(), src, off: this.currentTime || 0, vol: this.volume, muted: this.muted });
+    return origPlay.apply(this, args);
+  };
+  proto.pause = function (...args) {
+    log.push({ k: 'stop', id: idOf(this), t: Date.now() });
+    return origPause.apply(this, args);
+  };
+  document.addEventListener('ended', (e) => {
+    if (e.target instanceof HTMLMediaElement) log.push({ k: 'stop', id: idOf(e.target), t: Date.now() });
+  }, true);
+});
 const recordingStartedAt = Date.now();
 const page = await context.newPage();
 page.on('pageerror', (e) => log('page error:', e.message));
@@ -240,6 +266,11 @@ if (!opt['full-page']) {
   });
   await page.evaluate(() => window.dispatchEvent(new Event('resize')));
 }
+
+// The game's music starts only after a user gesture; its handler is a plain document listener.
+await page.evaluate(() => {
+  for (const type of ['pointerdown', 'keydown', 'touchstart']) document.dispatchEvent(new Event(type, { bubbles: true }));
+});
 
 await page.evaluate((speed) => {
   const s = document.getElementById('speed');
@@ -325,6 +356,45 @@ for (;;) {
 log('Champion crowned. Finishing...');
 await page.waitForTimeout(Number(opt['end-wait']) * 1000);
 
+const recordingEndedAt = Date.now();
+const audioLog = await page.evaluate(() => window.__audioLog || []);
+const recordingSeconds = (recordingEndedAt - recordingStartedAt) / 1000;
+
+// Pair each play with its stop to get {src, start, duration, offset, volume} instances.
+const instances = [];
+const open = new Map();
+const closeAt = (id, t) => {
+  const p = open.get(id);
+  if (!p) return;
+  open.delete(id);
+  const dur = (t - p.t) / 1000;
+  if (dur > 0.03) instances.push({ src: p.src, start: (p.t - recordingStartedAt) / 1000, dur, off: p.off, vol: p.vol });
+};
+for (const e of audioLog) {
+  if (e.k === 'play') {
+    closeAt(e.id, e.t);
+    if (!e.muted && e.vol > 0) open.set(e.id, e);
+  } else closeAt(e.id, e.t);
+}
+for (const id of [...open.keys()]) closeAt(id, recordingEndedAt);
+
+const audioDir = join(tmpDir, 'audio');
+mkdirSync(audioDir, { recursive: true });
+const audioFiles = new Map();
+for (const src of new Set(instances.map((i) => i.src))) {
+  try {
+    const res = await context.request.get(src, { timeout: 30_000 });
+    if (!res.ok()) throw new Error(`HTTP ${res.status()}`);
+    const file = join(audioDir, `a${audioFiles.size}.bin`);
+    writeFileSync(file, await res.body());
+    audioFiles.set(src, file);
+  } catch (e) {
+    log(`Could not download sound ${src}: ${e.message}`);
+  }
+}
+const mixable = instances.filter((i) => audioFiles.has(i.src));
+log(`Audio: ${mixable.length} sound instance(s) from ${audioFiles.size} file(s)`);
+
 const videoPath = await page.video().path();
 await context.close();
 
@@ -368,32 +438,98 @@ if (!existsSync(videoPath) || statSync(videoPath).size === 0) {
   process.exit(1);
 }
 
+const runFfmpeg = (args, stdio = 'inherit') =>
+  new Promise((res, rej) => {
+    const ff = spawn('ffmpeg', args, { stdio });
+    ff.on('error', (e) => rej(new Error(`Could not run ffmpeg: ${e.message}`)));
+    ff.on('close', (code) => (code === 0 ? res() : rej(new Error(`ffmpeg exited with code ${code}`))));
+  });
+
+// Mixes every logged sound onto one WAV that shares the video recording's timeline.
+// Done in batches so ffmpeg never has to open thousands of inputs at once.
+async function mixGameAudio(list, totalSeconds, outPath) {
+  const SR = 44100;
+  const BATCH = 60;
+  const partials = [];
+  for (let b = 0; b < list.length; b += BATCH) {
+    const batch = list.slice(b, b + BATCH);
+    const ins = [];
+    const chs = [];
+    batch.forEach((s, i) => {
+      ins.push('-ss', Math.max(0, s.off).toFixed(3), '-t', s.dur.toFixed(3), '-i', audioFiles.get(s.src));
+      const delay = Math.max(0, Math.round(s.start * 1000));
+      const fadeOut = Math.min(0.25, s.dur / 2);
+      chs.push(
+        `[${i}:a]aresample=${SR},aformat=channel_layouts=stereo,volume=${Math.min(1, s.vol).toFixed(3)},` +
+        `afade=t=out:st=${Math.max(0, s.dur - fadeOut).toFixed(3)}:d=${fadeOut.toFixed(3)},adelay=${delay}|${delay}[s${i}]`,
+      );
+    });
+    const mixed = batch.length === 1 ? '[s0]anull[m]' : `${batch.map((_, i) => `[s${i}]`).join('')}amix=inputs=${batch.length}:normalize=0:duration=longest[m]`;
+    const part = join(audioDir, `part${partials.length}.wav`);
+    await runFfmpeg(['-y', '-loglevel', 'error', ...ins, '-filter_complex', `${chs.join(';')};${mixed}`, '-map', '[m]', '-ar', String(SR), '-ac', '2', part]);
+    partials.push(part);
+  }
+  const ins = partials.flatMap((p) => ['-i', p]);
+  const labels = partials.map((_, i) => `[${i}:a]`).join('');
+  const mixAll = partials.length === 1 ? '[0:a]anull[m]' : `${labels}amix=inputs=${partials.length}:normalize=0:duration=longest[m]`;
+  await runFfmpeg([
+    '-y', '-loglevel', 'error', ...ins,
+    '-filter_complex', `${mixAll};[m]alimiter=limit=0.95,apad[o]`,
+    '-map', '[o]', '-t', totalSeconds.toFixed(2), '-ar', String(SR), '-ac', '2', outPath,
+  ]);
+}
+
+let gameAudioPath = null;
+if (mixable.length) {
+  try {
+    log('Mixing game audio...');
+    gameAudioPath = join(audioDir, 'game.wav');
+    await mixGameAudio(mixable, recordingSeconds + 2, gameAudioPath);
+  } catch (e) {
+    log(`Audio mix failed, video will be silent: ${e.message}`);
+    gameAudioPath = null;
+  }
+}
+
 log(`Encoding ${outW}x${outHeight} MP4 with ffmpeg (crf ${crf})...`);
 const inputs = [];
 const chains = [];
 const norm = `scale=${outW}:${outHeight}:flags=lanczos,setsar=1,fps=${opt.fps},format=yuv420p`;
-const addSegment = (file, start, duration, fade) => {
+const normA = 'aresample=44100,aformat=sample_fmts=fltp:channel_layouts=stereo';
+let inputCount = 0;
+// audio: 'silent' (needs a duration), 'game' (cut from the mixed game audio) or none.
+const addSegment = (file, start, duration, fade, audio) => {
   const i = chains.length;
-  inputs.push('-ss', start.toFixed(2), ...(duration ? ['-t', duration.toFixed(2)] : []), '-i', file);
+  const dur = duration ? ['-t', duration.toFixed(2)] : [];
+  const vIdx = inputCount++;
+  inputs.push('-ss', start.toFixed(2), ...dur, '-i', file);
   const fades = fade ? `,fade=t=in:st=0:d=0.15,fade=t=out:st=${(duration - 0.15).toFixed(2)}:d=0.15` : '';
-  chains.push(`[${i}:v]setpts=PTS-STARTPTS,${norm}${fades}[v${i}]`);
+  let chain = `[${vIdx}:v]setpts=PTS-STARTPTS,${norm}${fades}[v${i}]`;
+  const aIdx = inputCount++;
+  if (audio === 'silent') {
+    inputs.push('-f', 'lavfi', '-t', duration.toFixed(2), '-i', 'anullsrc=r=44100:cl=stereo');
+  } else {
+    inputs.push('-ss', start.toFixed(2), ...dur, '-i', gameAudioPath ?? file);
+  }
+  const aFades = fade ? `,afade=t=in:st=0:d=0.15,afade=t=out:st=${(duration - 0.15).toFixed(2)}:d=0.15` : '';
+  chain += `;[${aIdx}:a]asetpts=PTS-STARTPTS,${normA}${aFades}[a${i}]`;
+  chains.push(chain);
 };
-if (intro) addSegment(intro.path, intro.trim, introSeconds, false);
-for (const e of picked) addSegment(videoPath, e.t - before, before + after, true);
-addSegment(videoPath, trimSeconds, 0, false);
-const labels = chains.map((_, i) => `[v${i}]`).join('');
+const silentOrGame = gameAudioPath ? 'game' : 'silent';
+if (intro) addSegment(intro.path, intro.trim, introSeconds, false, 'silent');
+for (const e of picked) addSegment(videoPath, e.t - before, before + after, true, silentOrGame);
+addSegment(videoPath, trimSeconds, 0, false, silentOrGame);
+if (!gameAudioPath) log('No game audio captured; the video will be silent.');
+const labels = chains.map((_, i) => `[v${i}][a${i}]`).join('');
 const args = [
   '-y', ...inputs,
-  '-filter_complex', `${chains.join(';')};${labels}concat=n=${chains.length}:v=1:a=0[v]`,
-  '-map', '[v]',
+  '-filter_complex', `${chains.join(';')};${labels}concat=n=${chains.length}:v=1:a=1[v][a]`,
+  '-map', '[v]', '-map', '[a]',
   '-c:v', 'libx264', '-preset', outHeight >= 1080 ? 'medium' : 'slow', '-crf', crf, '-pix_fmt', 'yuv420p',
-  '-movflags', '+faststart', '-an', outFile,
+  '-c:a', 'aac', '-b:a', '128k',
+  '-movflags', '+faststart', outFile,
 ];
-await new Promise((res, rej) => {
-  const ff = spawn('ffmpeg', args, { stdio: 'inherit' });
-  ff.on('error', (e) => rej(new Error(`Could not run ffmpeg: ${e.message}`)));
-  ff.on('close', (code) => (code === 0 ? res() : rej(new Error(`ffmpeg exited with code ${code}`))));
-});
+await runFfmpeg(args);
 
 rmSync(tmpDir, { recursive: true, force: true });
 log('Done:', outFile);
