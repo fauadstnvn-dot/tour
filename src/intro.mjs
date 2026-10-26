@@ -17,6 +17,11 @@ const TEXT = {
     countdownSub: (n) => `${n} FIGHTERS  ·  1 CHAMPION`,
     elim: 'CAN YOU GUESS THE LAST ONE STANDING?',
     watch: 'WATCH TO THE END',
+    highlightNote: 'A FEW HIGHLIGHTS FROM THIS VIDEO',
+    hlTitle: 'HIGHLIGHTS',
+    hlSub: 'The best fighting moments',
+    mainTitle: 'THE FULL TOURNAMENT',
+    mainSub: 'From the first match to the champion',
   },
   vi: {
     who: 'AI SẼ CHIẾN THẮNG?',
@@ -31,11 +36,18 @@ const TEXT = {
     countdownSub: (n) => `${n} CHIẾN BINH  ·  1 NHÀ VÔ ĐỊCH`,
     elim: 'BẠN ĐOÁN ĐƯỢC NGƯỜI CUỐI CÙNG?',
     watch: 'XEM ĐẾN CUỐI',
+    highlightNote: 'VÀI ĐIỂM NHẤN TRONG VIDEO',
+    hlTitle: 'ĐIỂM NHẤN',
+    hlSub: 'Những pha giao tranh hay nhất',
+    mainTitle: 'TOÀN BỘ GIẢI ĐẤU',
+    mainSub: 'Từ trận mở màn đến nhà vô địch',
   },
 };
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const shuffle = (a) => { const b = a.slice(); for (let i = b.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [b[i], b[j]] = [b[j], b[i]]; } return b; };
+
+export const introText = (lang) => TEXT[lang] ?? TEXT.en;
 
 export function pickVariant(choice) {
   if (!choice || choice === 'random') return VARIANTS[Math.floor(Math.random() * VARIANTS.length)];
@@ -67,13 +79,15 @@ body:not(.go) *{animation-play-state:paused!important}
 .big{font-size:26vh;font-weight:900;line-height:1;text-shadow:0 1vh 0 #000,0 0 6vh rgba(255,80,60,.6)}
 .name{font-size:9vh;font-weight:900;text-shadow:0 .6vh 0 #000}
 .sub{font-size:4.6vh;font-weight:700;color:#e8ecf5;opacity:.92;animation:pop .45s cubic-bezier(.2,1.6,.4,1) both}
-.foot{position:fixed;left:0;right:0;bottom:4vh;text-align:center;font-size:3.6vh;font-weight:800;letter-spacing:.2em;color:#fff;opacity:.85;animation:blink 1s ease-in-out infinite}
+.foot{position:fixed;left:0;right:0;bottom:3vh;text-align:center;display:flex;flex-direction:column;align-items:center;gap:.8vh}
+.foot .note{font-size:3vh;font-weight:900;letter-spacing:.16em;color:#1a1200;background:linear-gradient(90deg,#ffb300,#ffe27a 50%,#ffb300);padding:.6vh 3vh;border-radius:99vh;box-shadow:0 0 3vh rgba(255,190,0,.6);animation:pop .5s cubic-bezier(.2,1.6,.4,1) .3s both}
+.foot .watch{font-size:2.8vh;font-weight:800;letter-spacing:.24em;color:#fff;opacity:.9;text-shadow:0 .3vh 0 #000;animation:blink 1s ease-in-out infinite}
 .hero{font-size:3.4vh;box-shadow:0 0 8vh rgba(255,210,63,.45);animation:pop .5s cubic-bezier(.2,1.6,.4,1) both}
 .hero.final{border-color:#ff4d4d;box-shadow:0 0 8vh rgba(255,60,60,.7);animation:shake .35s ease-in-out 3}
 .card{position:relative;border-radius:1.6vh;overflow:hidden;border:.35vh solid rgba(255,255,255,.4);background:radial-gradient(ellipse at 50% 75%,#2a3760 0%,#0b0f1c 80%);box-shadow:0 1vh 3vh rgba(0,0,0,.6);flex:none}
 .card img{position:absolute;left:6%;top:6%;width:88%;height:84%;object-fit:contain;object-position:center bottom;display:block;filter:drop-shadow(0 .5vh .8vh rgba(0,0,0,.6))}
 .card .ph{width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:8em;font-weight:900;color:rgba(255,255,255,.25)}
-.card .nm{position:absolute;left:0;right:0;bottom:0;padding:.9em .4em .4em;background:linear-gradient(transparent,rgba(0,0,0,.9));font-weight:800;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 .2em 0 #000}
+.card .nm{position:absolute;left:0;right:0;bottom:0;padding:.9em .3em .35em;background:linear-gradient(transparent,rgba(0,0,0,.92));font-weight:800;line-height:1.08;text-align:center;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;text-shadow:0 .2em 0 #000}
 .card.in{opacity:0;animation:pop .3s cubic-bezier(.2,1.6,.4,1) both}
 .card.dead{filter:grayscale(1) brightness(.35);border-color:#ff4d4d;transition:all .25s}
 .card.dead::after,.card.dead::before{content:"";position:absolute;inset:0}
@@ -82,7 +96,7 @@ body:not(.go) *{animation-play-state:paused!important}
 .card.sil img{filter:brightness(0)}
 .card.sil .nm{color:#ffd23f}
 .card.last{border-color:#ffd23f;transform:scale(1.18);box-shadow:0 0 5vh rgba(255,210,63,.7);transition:all .5s}
-.grid{display:grid;gap:1.6vh;justify-content:center}
+.grid{display:flex;flex-wrap:wrap;gap:1.6vh;justify-content:center;align-content:flex-start;max-width:96vw}
 .strip{display:flex;gap:1.4vh;justify-content:center}
 .top{display:flex;align-items:center;justify-content:center;gap:4vh}
 .big2{font-size:14vh;font-weight:900;line-height:1;color:#fff;text-shadow:0 .8vh 0 #000,0 0 5vh rgba(255,80,60,.6)}
@@ -105,17 +119,27 @@ body:not(.go) *{animation-play-state:paused!important}
 const portrait = (f) => (f.img ? `data:image/png;base64,${f.img}` : '');
 
 const card = (f, ch, cls = '') =>
-  `<div class="card ${cls}" style="width:${(ch * 0.9).toFixed(1)}vh;height:${ch}vh;font-size:${Math.max(ch * 0.11, 2.2).toFixed(1)}vh">${
+  `<div class="card ${cls}" style="width:${(ch * 0.9).toFixed(1)}vh;height:${ch}vh;font-size:${Math.max(ch * 0.085, 1.8).toFixed(1)}vh">${
     f.img ? `<img src="${portrait(f)}" alt="">` : '<div class="ph">?</div>'}<span class="nm">${esc(f.name)}</span></div>`;
 
-// Card size that lets `count` cards fit under a header, on any 16:9 canvas.
-function gridFor(count, header) {
-  const cols = count <= 8 ? Math.max(count, 1) : 8;
-  const rows = Math.ceil(count / cols);
-  const ch = Math.min(34, (100 - header - 14 - (rows - 1) * 1.6) / rows);
-  return { cols, ch: Number(ch.toFixed(1)) };
+// Largest card size that fits `count` cards inside a 16:9 canvas without clipping:
+// every column count is tried and the best fit of width and height wins.
+const CANVAS_W = (100 * 16) / 9;
+function gridFor(count, header, footer = 15) {
+  const gap = 1.6;
+  const availW = CANVAS_W - 10;
+  const availH = 100 - header - footer;
+  let best = { cols: 1, ch: 1 };
+  for (let cols = 1; cols <= count; cols++) {
+    const rows = Math.ceil(count / cols);
+    const byH = (availH - (rows - 1) * gap) / rows;
+    const byW = (availW - (cols - 1) * gap) / (cols * 0.9);
+    const ch = Math.min(byH, byW, 40);
+    if (ch > best.ch) best = { cols, ch };
+  }
+  return { cols: best.cols, ch: Number(best.ch.toFixed(1)) };
 }
-const gridStyle = (cols, ch) => `grid-template-columns:repeat(${cols},${(ch * 0.9).toFixed(1)}vh)`;
+const gridStyle = (cols, ch) => `width:${(cols * ch * 0.9 + (cols - 1) * 1.6 + 0.6).toFixed(1)}vh`;
 
 function body(variant, fighters, t, seconds) {
   const n = fighters.length;
@@ -133,7 +157,7 @@ const f=F[i++%F.length];if(img&&f.i)img.src=f.i;nm.textContent=f.n;d=Math.min(38
       };
     }
     case 'survive': {
-      const { cols, ch } = gridFor(shown.length, 18);
+      const { cols, ch } = gridFor(shown.length, 23, 22);
       return {
         html: `<div class="wrap" style="gap:2.5vh;justify-content:flex-start;padding-top:5vh"><div class="top"><div class="big2 num" id="num">${n}</div><div class="kicker" style="font-size:6vh">${esc(t.survive)}</div></div><div class="grid" id="g" style="${gridStyle(cols, ch)}">${shown.map((f) => card(f, ch)).join('')}</div><div class="sub" id="end" style="opacity:0">${esc(t.surviveEnd)}</div></div>`,
         js: `const num=document.getElementById('num'),cards=[...document.querySelectorAll('.card')].sort(()=>Math.random()-.5),keep=cards.pop();let c=${n};
@@ -144,7 +168,7 @@ if(c<=1){clearInterval(iv);keep.classList.add('last');const e=document.getElemen
       };
     }
     case 'predict': {
-      const { cols, ch } = gridFor(shown.length, 14);
+      const { cols, ch } = gridFor(shown.length, 16, 26);
       return {
         html: `<div class="wrap" style="gap:2.5vh;justify-content:flex-start;padding-top:5vh"><div class="kicker" style="font-size:6.5vh">${esc(t.predict)}</div><div class="grid" style="${gridStyle(cols, ch)}">${shown.map((f, i) => card(f, ch, 'in').replace('class="card in"', `class="card in" data-d="${i}"`).replace('style="', `style="animation-delay:${((i * ms * 0.5) / shown.length / 1000).toFixed(2)}s;`)).join('')}</div><div class="sub" style="animation-delay:${(seconds * 0.55).toFixed(2)}s">${esc(t.predictCta)}</div></div>`,
         js: '',
@@ -153,12 +177,12 @@ if(c<=1){clearInterval(iv);keep.classList.add('last');const e=document.getElemen
     case 'versus': {
       const [a, b] = shuffle(fighters);
       return {
-        html: `<div class="wrap" style="justify-content:flex-start;padding-top:6vh"><div class="kicker">${esc(t.versusTop)}</div></div><div class="fc l" style="transform:translateY(-50%)">${card(a, 46)}</div><div class="fc r" style="transform:translateY(-50%)">${card(b || a, 46)}</div><div class="vs">VS</div><div class="flash"></div><div class="wrap" style="justify-content:flex-end;padding-bottom:9vh"><div class="sub" style="animation-delay:1.1s">${esc(t.versusBottom)}</div></div>`,
+        html: `<div class="wrap" style="justify-content:flex-start;padding-top:6vh"><div class="kicker">${esc(t.versusTop)}</div></div><div class="fc l" style="transform:translateY(-50%)">${card(a, 46)}</div><div class="fc r" style="transform:translateY(-50%)">${card(b || a, 46)}</div><div class="vs">VS</div><div class="flash"></div><div class="wrap" style="justify-content:flex-end;padding-bottom:15vh"><div class="sub" style="animation-delay:1.1s">${esc(t.versusBottom)}</div></div>`,
         js: '',
       };
     }
     case 'countdown': {
-      const strip = shuffle(fighters).slice(0, 8);
+      const strip = shuffle(fighters).slice(0, 7);
       return {
         html: `<div class="wrap" style="gap:3vh"><div class="big num" id="num">3</div><div class="sub" style="animation-delay:.2s">${esc(t.countdownSub(n))}</div><div class="strip" style="margin-top:2vh">${strip.map((f, i) => card(f, 22, 'in').replace('style="', `style="animation-delay:${(0.15 * i).toFixed(2)}s;`)).join('')}</div></div>`,
         js: `const num=document.getElementById('num'),seq=['3','2','1',${JSON.stringify(t.fight)}],step=${(ms * 0.22).toFixed(0)};
@@ -167,7 +191,7 @@ seq.forEach((s,i)=>setTimeout(()=>{num.textContent=s;if(i===3){num.style.color='
     }
     case 'elim':
     default: {
-      const { cols, ch } = gridFor(shown.length, 14);
+      const { cols, ch } = gridFor(shown.length, 16, 16);
       return {
         html: `<div class="wrap" style="gap:2.5vh;justify-content:flex-start;padding-top:5vh"><div class="kicker" style="font-size:5.6vh">${esc(t.elim)}</div><div class="grid" style="${gridStyle(cols, ch)}">${shown.map((f) => card(f, ch)).join('')}</div></div>`,
         js: `const cards=[...document.querySelectorAll('.card')].sort(()=>Math.random()-.5),keep=cards.pop(),step=Math.max(50,${ms * 0.7}/Math.max(1,cards.length));
@@ -183,6 +207,31 @@ export function buildIntroHtml({ variant, fighters, shots = [], lang = 'en', sec
   const list = fighters.length ? fighters : [{ name: '???' }];
   const { html, js } = body(variant, list, t, seconds);
   return `<!doctype html><html><head><meta charset="utf-8"><style>${css(seconds)}</style></head>
-<body>${reel(shots, seconds)}<div class="vig"></div>${html}<div class="foot">${esc(t.watch)}</div>
+<body>${reel(shots, seconds)}<div class="vig"></div>${html}<div class="foot"><div class="note">${esc(t.highlightNote)}</div><div class="watch">${esc(t.watch)}</div></div>
 <script>window.__go=function(){document.body.classList.add('go');${js}};</script></body></html>`;
+}
+
+// Short full-screen title card (e.g. "HIGHLIGHTS") shown between the intro, the clips and the full tournament.
+export function buildTitleCardHtml({ title, sub, shots = [], seconds = 2.2, tone = 'gold' }) {
+  const color = tone === 'red' ? '#ff5a4d' : '#ffd23f';
+  const glow = tone === 'red' ? 'rgba(255,70,60,.65)' : 'rgba(255,210,63,.6)';
+  const extra = `
+.tc{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3vh;text-align:center;padding:0 6vh}
+.tc .t{font-size:15vh;font-weight:900;letter-spacing:.06em;line-height:1;color:${color};text-shadow:0 .9vh 0 #000,0 0 7vh ${glow};animation:tcIn .55s cubic-bezier(.2,1.5,.4,1) both}
+.tc .s{font-size:4.4vh;font-weight:800;letter-spacing:.12em;color:#fff;text-shadow:0 .4vh 0 #000;animation:pop .5s cubic-bezier(.2,1.6,.4,1) .3s both}
+.tc .bar{height:.9vh;border-radius:99vh;background:linear-gradient(90deg,transparent,${color},transparent);box-shadow:0 0 3vh ${glow};animation:bar .7s ease-out .15s both}
+.tc .bar.b{animation-delay:.25s}
+.spark{position:fixed;width:1.4vh;height:1.4vh;border-radius:50%;background:${color};box-shadow:0 0 2.5vh ${color};opacity:0;animation:spark 1.6s ease-out infinite}
+@keyframes tcIn{from{opacity:0;transform:scale(2.2);letter-spacing:.4em}to{opacity:1;transform:scale(1);letter-spacing:.06em}}
+@keyframes bar{from{width:0;opacity:0}to{width:70vh;opacity:1}}
+@keyframes spark{0%{opacity:0;transform:translateY(0) scale(.4)}25%{opacity:1}100%{opacity:0;transform:translateY(-12vh) scale(1.2)}}
+`;
+  const sparks = Array.from({ length: 14 }, (_, i) => {
+    const x = 12 + ((i * 53) % 77);
+    const y = 38 + ((i * 29) % 40);
+    return `<i class="spark" style="left:${x}vw;top:${y}vh;animation-delay:${(i * 0.13).toFixed(2)}s"></i>`;
+  }).join('');
+  return `<!doctype html><html><head><meta charset="utf-8"><style>${css(seconds)}${extra}</style></head>
+<body>${reel(shots, seconds)}<div class="vig"></div><div class="tc"><div class="bar"></div><div class="t">${esc(title)}</div><div class="bar b"></div><div class="s">${esc(sub)}</div></div>${sparks}
+<script>window.__go=function(){document.body.classList.add('go')};</script></body></html>`;
 }
