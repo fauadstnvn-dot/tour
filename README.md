@@ -40,8 +40,9 @@ You can also set `GAME_URL` and `FIGHTERS` as environment variables.
 | `--intro` | `random` | Hook intro: `random`, `none`, `who`, `survive`, `predict`, `versus`, `countdown`, `elim` |
 | `--intro-seconds` | 5 | Intro length |
 | `--highlights` | 4 | Highlight clips between intro and game (0 = off) |
-| `--highlight-before` / `--highlight-after` | 4 / 1 | Seconds kept before / after each match end |
-| `--lang` | `en` | Intro text language (`en`, `vi`) |
+| `--highlight-before` / `--highlight-after` | 5 / 1 | Seconds kept before / after each KO (clips never leave the fight itself) |
+| `--lang` | `en` | Text language for intro, match cards and highlight frames (`en`, `vi`) |
+| `--match-card` | 3.4 | Seconds of the card shown before every match (match number, stage, fighter portraits + names), 0 = off |
 | `--crf` | 24 (20 from 1080p) | x264 quality, lower = better |
 | `--full-page` | off | Record the whole page, not only the arena |
 | `--headed` | off | Show the browser window |
@@ -52,9 +53,12 @@ You can also set `GAME_URL` and `FIGHTERS` as environment variables.
    a pick-your-champion grid, a VS clash, a 3-2-1 start, or an elimination guess.
    It uses a portrait of every real fighter (their own character, weapon and shield,
    captured from the game's viewer) over cut-in frames of your arena.
-2. Highlights: a few short clips cut from the tournament itself. The final is never
-   used, so the champion is not spoiled.
-3. The full tournament.
+2. Highlights: a "HIGHLIGHTS" title card, then a few short clips cut only from inside real
+   fights (never from pre-match cards, brackets or results), the closest fights first. Each
+   clip sits in an animated gold frame with a title plate (highlight number, fighters, stage).
+   The final is never used, so the champion is not spoiled.
+3. The full tournament. Every match opens with a card: match number, stage (group / round of
+   16 / quarterfinal / ...), and the portrait and name of each fighter.
 
 Highlight clips need `window.__rig.tour` from the current `index.php`. Upload the
 updated `index.php` to your host first; without it, clips are cut from tournament
@@ -67,7 +71,9 @@ node src/render.mjs --height 1440
 ```
 
 The capture size follows the output height, and every intro size is in `vh`, so layout
-is identical at any resolution. Rendering at 1440p is slower and needs more CPU/RAM.
+is identical at any resolution. The character speech box (top left) is also sized from the
+frame height, so it is larger at 1080p / 2K. Intro grids are fitted to the 16:9 frame, so
+no fighter card is cut off. Rendering at 1440p is slower and needs more CPU/RAM.
 
 ## GitHub Actions
 
