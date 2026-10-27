@@ -8,6 +8,7 @@ import { buildIntroHtml, buildTitleCardHtml, introText, pickVariant, VARIANTS } 
 import { highlightChain, installMatchCard, renderHighlightAssets, stageLabel, textFor } from './fx.mjs';
 import { buildOutroHtml, pickOutro, OUTRO_VARIANTS } from './outro.mjs';
 import { makeIntroAudio, makeOutroAudio } from './sfx.mjs';
+import { installVirtualClock } from './virtualClock.mjs';
 
 const { values: opt } = parseArgs({
   options: {
@@ -219,10 +220,13 @@ const context = await browser.newContext({
   viewport: { width: capW, height: capH },
   deviceScaleFactor: 1,
   userAgent: REAL_UA,
-  recordVideo: { dir: tmpDir, size: { width: capW, height: capH } },
 });
-// Playwright's recordVideo has no sound. The game plays every sound through HTMLMediaElement
-// (music and skill mp3), so each play/stop is logged here with a timestamp and mixed later.
+// The game runs on a virtual clock (see virtualClock.mjs): the arena is photographed frame by frame,
+// so the footage is smooth however slow this machine is. Must be installed before anything else.
+await context.addInitScript(installVirtualClock);
+// Nothing records sound, so every play/stop the game does on an HTMLMediaElement is logged with a
+// virtual timestamp and mixed afterwards. Media is never really played: the virtual clock gives
+// each element its position and its 'ended' event (real playback would run at real speed).
 await context.addInitScript(() => {
   try { Object.defineProperty(Navigator.prototype, 'webdriver', { get: () => undefined, configurable: true }); } catch {}
   const log = (window.__audioLog = []);
@@ -233,45 +237,78 @@ await context.addInitScript(() => {
     return ids.get(el);
   };
   const proto = HTMLMediaElement.prototype;
-  const origPlay = proto.play;
-  const origPause = proto.pause;
-  // `src` is the URL the game just assigned; `currentSrc` still holds the previous track at this point.
-  proto.play = function (...args) {
-  const src = this.src || this.currentSrc;
-  const id = idOf(this);
-  const t = Date.now();
-  if (src) log.push({ k: 'play', id, t, src, off: this.currentTime || 0, vol: this.volume, muted: this.muted });
-  const result = origPlay.apply(this, args);
-  if (result && result.catch) result.catch(() => log.push({ k: 'stop', id, t: Date.now() }));
-  return result;
+  const clearTimer = (s) => { if (s.timer) { clearTimeout(s.timer); s.timer = 0; } };
+  proto.play = function () {
+    const clk = window.__clk;
+    const src = this.src || this.currentSrc;
+    const id = idOf(this);
+    const s = clk.stateOf(this);
+    clearTimer(s);
+    if (this.preload === 'none') this.preload = 'metadata';
+    s.off = s.ended ? 0 : this.currentTime || 0;
+    s.ended = false;
+    s.playing = true;
+    s.start = clk.now();
+    if (src) log.push({ k: 'play', id, t: Date.now(), src, off: s.off, vol: this.volume, muted: this.muted });
+    const finish = () => {
+      s.timer = 0;
+      s.playing = false;
+      s.ended = true;
+      try { this.currentTime = this.duration; } catch {}
+      log.push({ k: 'stop', id, t: Date.now() });
+      this.dispatchEvent(new Event('pause'));
+      this.dispatchEvent(new Event('ended'));
+    };
+    s.sched = () => {
+      clearTimer(s);
+      if (!s.playing || this.loop || !isFinite(this.duration)) return;
+      const remain = ((this.duration - clk.position(this, s)) * 1000) / (this.playbackRate || 1);
+      s.timer = setTimeout(finish, Math.max(0, remain));
+    };
+    if (isFinite(this.duration)) s.sched();
+    else this.addEventListener('loadedmetadata', () => s.sched && s.sched(), { once: true });
+    setTimeout(() => { this.dispatchEvent(new Event('play')); this.dispatchEvent(new Event('playing')); }, 0);
+    return Promise.resolve();
+  };
+  proto.pause = function () {
+    const clk = window.__clk;
+    const s = clk.stateOf(this);
+    log.push({ k: 'stop', id: idOf(this), t: Date.now() });
+    if (s.playing) {
+      const pos = clk.position(this, s);
+      s.playing = false;
+      clearTimer(s);
+      try { this.currentTime = pos; } catch {}
+      this.dispatchEvent(new Event('pause'));
+    }
   };
   // The game swaps tracks by assigning `src` without calling pause(), so close the old instance here.
   const srcDesc = Object.getOwnPropertyDescriptor(proto, 'src');
   if (srcDesc && srcDesc.set) {
-  Object.defineProperty(proto, 'src', {
-  ...srcDesc,
-  set(value) {
-  log.push({ k: 'stop', id: idOf(this), t: Date.now() });
-  srcDesc.set.call(this, value);
-  },
-  });
+    Object.defineProperty(proto, 'src', {
+      ...srcDesc,
+      set(value) {
+        log.push({ k: 'stop', id: idOf(this), t: Date.now() });
+        const s = window.__clk.stateOf(this);
+        clearTimer(s);
+        s.playing = false;
+        s.ended = false;
+        s.off = 0;
+        srcDesc.set.call(this, value);
+      },
+    });
   }
   // The game sets `unlocked = false` whenever play() is interrupted and only a new gesture re-enables
   // the music. A real visitor clicks again; the renderer has nobody to click, so keep re-sending it.
   const sendGesture = () => {
-  for (const type of ['pointerdown', 'touchstart']) document.dispatchEvent(new Event(type, { bubbles: true }));
-  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', bubbles: true }));
+    for (const type of ['pointerdown', 'touchstart']) document.dispatchEvent(new Event(type, { bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', bubbles: true }));
   };
   setInterval(sendGesture, 400);
-  proto.pause = function (...args) {
-    log.push({ k: 'stop', id: idOf(this), t: Date.now() });
-    return origPause.apply(this, args);
-  };
   document.addEventListener('ended', (e) => {
     if (e.target instanceof HTMLMediaElement) log.push({ k: 'stop', id: idOf(e.target), t: Date.now() });
   }, true);
 });
-const recordingStartedAt = Date.now();
 const page = await context.newPage();
 page.on('pageerror', (e) => log('page error:', e.message));
 const sceneryStats = { list: null, listBadType: 0, files: 0, failed: 0, badType: 0 };
@@ -540,8 +577,58 @@ await page.waitForFunction(() => {
 await page.waitForTimeout(500);
 if (matchCardSeconds > 0) await installMatchCard(page, { portraits: portraitById, lang: opt.lang, seconds: matchCardSeconds });
 await page.evaluate(() => document.body.classList.add('vid-live'));
-const trimSeconds = (Date.now() - recordingStartedAt) / 1000;
-log(`Tournament of ${fighters} fighters started. Recording... (trimming first ${trimSeconds.toFixed(1)}s)`);
+// Frame-by-frame capture: the game's virtual clock is advanced 1/60 s at a time and the arena is
+// photographed once per output frame, then piped to ffmpeg. Footage time = frames / fps, so the
+// result is smooth and at exact speed whatever the speed of this machine.
+const FPS = Math.min(60, Math.max(1, Number(opt.fps)));
+const capPath = join(tmpDir, 'main.mp4');
+let capFrames = 0;
+let capTicks = 0;
+let recStartV = 0;
+let capture = null;
+const footageNow = () => capFrames / FPS;
+async function startCapture() {
+  const ff = spawn('ffmpeg', [
+    '-y', '-loglevel', 'error', '-f', 'image2pipe', '-framerate', String(FPS), '-c:v', 'mjpeg', '-i', '-',
+    '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '14', '-pix_fmt', 'yuv420p', capPath,
+  ], { stdio: ['pipe', 'inherit', 'inherit'] });
+  const done = new Promise((res, rej) => {
+    ff.on('error', (e) => rej(new Error(`Could not run ffmpeg: ${e.message}`)));
+    ff.on('close', (code) => (code === 0 ? res() : rej(new Error(`ffmpeg (capture) exited with code ${code}`))));
+  });
+  done.catch(() => {});
+  ff.stdin.on('error', () => {});
+  recStartV = await page.evaluate(() => window.__clk.setManual(true));
+  capture = { ff, done };
+}
+async function stepFrame() {
+  capFrames++;
+  const wantTicks = Math.round((capFrames * 60) / FPS);
+  const n = Math.max(1, wantTicks - capTicks);
+  capTicks += n;
+  await page.evaluate((k) => window.__clk.step(k), n);
+  const buf = await page.screenshot({ type: 'jpeg', quality: 92, scale: 'css' });
+  if (!capture.ff.stdin.write(buf)) await new Promise((r) => capture.ff.stdin.once('drain', r));
+}
+async function stepFrames(n) {
+  for (let i = 0; i < n; i++) await stepFrame();
+}
+// While the game is paused between frames, page-side work that waits on its timers (scenery loading)
+// would never finish, so keep the clock moving until the promise settles.
+async function whileStepping(promise) {
+  let settled = false;
+  const wrapped = promise.finally(() => { settled = true; });
+  wrapped.catch(() => {});
+  while (!settled) await stepFrame();
+  return wrapped;
+}
+async function stopCapture() {
+  capture.ff.stdin.end();
+  await capture.done;
+}
+await startCapture();
+const trimSeconds = 0;
+log('Tournament of ' + fighters + ' fighters started. Recording frame by frame at ' + FPS + ' fps...');
 
 const introFighters = entrantInfo.map((e) => ({ id: e.id, name: e.name, img: portraitById[e.id] }));
 
@@ -610,7 +697,7 @@ for (;;) {
       match: matchSnap(),
     };
   });
-  const now = (Date.now() - recordingStartedAt) / 1000;
+  const now = footageNow();
   trackMatch(snap.match, now);
   if (snap.log) {
     for (; seenLog < snap.log.length; seenLog++) {
@@ -623,7 +710,7 @@ for (;;) {
   lastPanel = snap.panel;
   if (sceneCount && snap.match && snap.match.no !== lastSceneryMatch) {
     if (lastSceneryMatch !== null) {
-      const next = await pickScenery();
+      const next = await whileStepping(pickScenery());
       log(`Scenery for match ${snap.match.no}: ${next ? next.name : 'unchanged'}`);
     }
     lastSceneryMatch = snap.match.no;
@@ -640,9 +727,9 @@ for (;;) {
     try { await page.screenshot({ path: join(dirname(outFile), 'debug-stage.png') }); log('Saved output/debug-stage.png for visual checking.'); } catch {}
     if (st && !st.images) {
       log('Scenery is NOT on the fighting stage - driving it again and probing one layer...');
-      const next = await pickScenery();
+      const next = await whileStepping(pickScenery());
       log(`Scenery re-drive: ${next ? next.name : 'none'}`);
-      await page.waitForTimeout(6000);
+      await stepFrames(6 * FPS);
       st = await checkStage();
       log(`Scenery stage re-check: current=${st ? st.current : '?'} sceneryImages=${st ? st.images : '?'}`);
       const probe = await page.evaluate(async () => {
@@ -670,7 +757,7 @@ for (;;) {
   if (sawPapers && !snap.papers) { mainEnd = lastPaperAt + endWait; break; }
   // No newspapers in this final (the game sometimes has no reporters): stop right after the champion is decided.
   if (snap.champion && !snap.papers) { mainEnd = (sawPapers ? lastPaperAt : now) + endWait; break; }
-  const elapsed = Date.now() - startedAt;
+  const elapsed = footageNow() * 1000;
   // Arena frames for the intro backgrounds: only real fighting, never a card, bracket or newspaper scene.
   if (shots.length < 8 && elapsed - lastShotAt > 3500 && elapsed > 2500 && snap.match && snap.match.go && !snap.match.over && !snap.match.card) {
     lastShotAt = elapsed;
@@ -682,23 +769,24 @@ for (;;) {
     const txt = await page.evaluate(() => document.getElementById('tour-panel')?.innerText?.slice(0, 80) ?? '');
     log(`Recording ${(elapsed / 60_000).toFixed(1)} min`, txt.replace(/\s+/g, ' '));
   }
-  await page.waitForTimeout(250);
+  await stepFrames(Math.max(1, Math.round(FPS / 4)));
 }
-const nowSeconds = () => (Date.now() - recordingStartedAt) / 1000;
+const nowSeconds = () => footageNow();
 if (mainEnd === null) mainEnd = nowSeconds();
 log(sawPapers ? 'Final newspapers shown. Finishing the game footage...' : 'Champion decided. Finishing the game footage...');
 const remaining = mainEnd - nowSeconds();
-if (remaining > 0) await page.waitForTimeout(remaining * 1000);
+if (remaining > 0) await stepFrames(Math.ceil(remaining * FPS));
 mainEnd = Math.min(mainEnd, nowSeconds());
 
-const recordingEndedAt = Date.now();
+await stopCapture();
+const recordingEndedAt = recStartV + footageNow() * 1000;
 const championInfo = await page.evaluate(() => {
   const c = window.__rig && window.__rig.tour && window.__rig.tour.champion;
   return c ? { id: c.id, name: c.name } : null;
 });
 const championName = championInfo ? championInfo.name : null;
 const audioLog = await page.evaluate(() => window.__audioLog || []);
-const recordingSeconds = (recordingEndedAt - recordingStartedAt) / 1000;
+const recordingSeconds = footageNow();
 
 // Pair each play with its stop to get {src, start, duration, offset, volume} instances.
 const instances = [];
@@ -707,8 +795,12 @@ const closeAt = (id, t) => {
   const p = open.get(id);
   if (!p) return;
   open.delete(id);
-  const dur = (t - p.t) / 1000;
-  if (dur > 0.03) instances.push({ src: p.src, start: (p.t - recordingStartedAt) / 1000, dur, off: p.off, vol: p.vol });
+  let start = (p.t - recStartV) / 1000;
+  let dur = (t - p.t) / 1000;
+  let off = p.off;
+  // A sound that began before the footage did (music): skip into it instead of starting before time zero.
+  if (start < 0) { off += -start; dur += start; start = 0; }
+  if (dur > 0.03) instances.push({ src: p.src, start, dur, off, vol: p.vol });
 };
 for (const e of audioLog) {
   if (e.k === 'play') {
@@ -769,7 +861,7 @@ if (footageSeconds > 5 && musicCovered < footageSeconds * 0.5) {
   log(`Audio: ${mixable.length} sound instance(s) from ${audioFiles.size} file(s); music: ${musicCount} track(s), ${musicSeconds.toFixed(0)}s of ${recordingSeconds.toFixed(0)}s`);
   if (!musicCount) log('WARNING: no background music was captured. Check that ?api=music returns tracks on the host.');
 
-const videoPath = await page.video().path();
+const videoPath = capPath;
 await context.close();
 
 // Records a self-contained animated HTML card (intro / outro) and returns where its animation starts.
