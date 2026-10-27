@@ -565,7 +565,16 @@ const entrantInfo = await page.evaluate((picks) => {
       e.weapon = find('weapon', p.weapon);
       e.shield = find('shield', p.shield);
     }
-    return { id: e.id, name: e.name };
+    const STYLE_LABEL = { aggressor: 'pressure fighter', counter: 'counter-attacker', kiter: 'keeps its distance', trickster: 'trickster who feints' };
+    return {
+      id: e.id,
+      name: e.name,
+      character: e.char && e.char.name ? e.char.name : null,
+      weapon: e.weapon && e.weapon.name ? e.weapon.name : null,
+      shield: e.shield && e.shield.name ? e.shield.name : null,
+      style: STYLE_LABEL[e.style] || e.style || null,
+      skill: typeof e.skill === 'number' ? Math.round(e.skill * 100) : null,
+    };
   });
 }, pickList);
 const portraitById = Object.fromEntries(entrantInfo.map((e) => [e.id, portraits[e.id] ?? null]));
@@ -759,7 +768,7 @@ for (;;) {
   if (snap.champion && !snap.papers) { mainEnd = (sawPapers ? lastPaperAt : now) + endWait; break; }
   const elapsed = footageNow() * 1000;
   // Arena frames for the intro backgrounds: only real fighting, never a card, bracket or newspaper scene.
-  if (shots.length < 8 && elapsed - lastShotAt > 3500 && elapsed > 2500 && snap.match && snap.match.go && !snap.match.over && !snap.match.card) {
+  if (shots.length < 8 && elapsed - lastShotAt > 3500 && elapsed > 2500 && snap.match && snap.match.go && !snap.match.over && !snap.match.card && !snap.match.isFinal && !/^(semi|final)/i.test(snap.match.roundName || '')) {
     lastShotAt = elapsed;
     shots.push((await page.screenshot({ type: 'jpeg', quality: 88 })).toString('base64'));
   }
@@ -883,12 +892,15 @@ async function recordCard(html, seconds, dirName) {
   return { path, trim };
 }
 
+// The two finalists are never shown in the intro, the thumbnail or the title: that would spoil the final.
+const finalistNames = new Set([...matches.values()].find((m) => m.isFinal)?.names ?? []);
+const introSafeFighters = introFighters.filter((f) => !finalistNames.has(f.name));
 let intro = null;
 if (introChoice) {
-    const introWithImages = introFighters;
+  const introWithImages = introSafeFighters.length >= 2 ? introSafeFighters : introFighters;
   log(`Rendering intro "${introChoice}" (${introSeconds}s)...`);
   intro = await recordCard(
-    buildIntroHtml({ variant: introChoice, fighters: introWithImages, shots, lang: opt.lang, seconds: introSeconds }),
+    buildIntroHtml({ variant: introChoice, fighters: introWithImages, total: introFighters.length, shots, lang: opt.lang, seconds: introSeconds }),
     introSeconds,
     'intro',
   );
@@ -952,32 +964,78 @@ try {
 } catch (e) {
   log(`Thumbnail failed (video is still produced): ${redact(String(e.stack || e.message).split('\n').slice(0, 4).join(' | '))}`);
 }
+
+// Where each part sits in the FINAL video (intro + highlights + cards come before the full tournament).
+const mainStartInVideo = (intro ? introSeconds : 0) + (picked.length ? HL_CARD_SECONDS + picked.reduce((a, m) => a + (m.end - m.start), 0) + MAIN_CARD_SECONDS : 0);
+const inVideo = (t) => Math.max(0, Math.round((mainStartInVideo + t - trimSeconds) * 10) / 10);
+const isLateRound = (m) => m.isFinal || /^(semi|final)/i.test(m.roundName || '');
+const matchTitle = (m) => {
+  if (m.isFinal) return 'The Final';
+  const vs = m.names.join(' vs ');
+  if (m.kind === 'group') return `Group ${String.fromCharCode(65 + (m.g || 0))}: ${vs}`;
+  return `${m.roundName || 'Knockout'}: ${vs}`;
+};
+const chapters = [];
+if (intro) chapters.push({ t: 0, title: 'Intro' });
+if (picked.length) chapters.push({ t: intro ? introSeconds : 0, title: 'Highlights' });
+const orderedMatches = [...matches.values()].filter((m) => m.names.length >= 2).sort((a, b) => a.seen - b.seen);
+for (const m of orderedMatches) chapters.push({ t: inVideo(m.seen), title: matchTitle(m) });
+if (finalMatch && finalMatch.ko !== null) chapters.push({ t: inVideo(finalMatch.ko), title: 'Champion crowned' });
+
+// Spoiler-safe talking points for the description: only matches BEFORE the semifinals, and never the final.
+const early = orderedMatches.filter((m) => !isLateRound(m) && m.ko !== null && m.fightStart !== null && m.winner);
+const loserOf = (m) => m.names.find((n) => n !== m.winner) ?? null;
+const winnerHpLow = (m) => { const wi = m.names.indexOf(m.winner); return wi >= 0 ? m.minHp[wi] : 1; };
+const notable = [];
+const byClose = early.slice().sort((a, b) => winnerHpLow(a) - winnerHpLow(b))[0];
+if (byClose && winnerHpLow(byClose) < 0.4) notable.push(`Closest win: ${byClose.winner} beat ${loserOf(byClose)} with only ${Math.max(1, Math.round(winnerHpLow(byClose) * 100))}% health left (${matchTitle(byClose).split(':')[0]})`);
+const byFast = early.slice().sort((a, b) => (a.ko - a.fightStart) - (b.ko - b.fightStart))[0];
+if (byFast) notable.push(`Fastest knockout: ${byFast.winner} finished ${loserOf(byFast)} in about ${Math.max(1, Math.round(byFast.ko - byFast.fightStart))} seconds`);
+const byLong = early.slice().sort((a, b) => (b.ko - b.fightStart) - (a.ko - a.fightStart))[0];
+if (byLong && byLong !== byFast) notable.push(`Longest fight: ${byLong.names.join(' vs ')} lasted about ${Math.round(byLong.ko - byLong.fightStart)} seconds`);
+const flawless = early.filter((m) => winnerHpLow(m) > 0.97).slice(0, 2);
+for (const m of flawless) notable.push(`Flawless win: ${m.winner} beat ${loserOf(m)} without taking noticeable damage`);
+
+const fightSecs = early.map((m) => m.ko - m.fightStart);
+const stats = {
+  totalMatches: orderedMatches.length,
+  groupMatches: orderedMatches.filter((m) => m.kind === 'group').length,
+  knockoutRounds: stageNames.length,
+  shortestFightSeconds: fightSecs.length ? Math.round(Math.min(...fightSecs)) : null,
+  longestFightSeconds: fightSecs.length ? Math.round(Math.max(...fightSecs)) : null,
+  closeWins: early.filter((m) => winnerHpLow(m) < 0.25).length,
+  flawlessWins: early.filter((m) => winnerHpLow(m) > 0.97).length,
+};
+
 writeFileSync(`${videoShort}.json`, JSON.stringify({
   fighters,
   fighterNames: introFighters.map((f) => f.name),
-  champion: championName,
-  finalists: finalMatch ? finalMatch.names : [],
   stages: stageNames,
   highlights: picked.map((m) => ({ label: m.label, names: m.names })),
-  durationSeconds: Math.round(mainEnd - trimSeconds),
+  chapters,
+  notable,
+  stats,
+  fighterProfiles: entrantInfo.map(({ id, ...rest }) => rest),
+  durationSeconds: Math.round(mainEnd - trimSeconds + mainStartInVideo),
   height: outHeight,
   thumbnail: existsSync(thumbPath) ? thumbPath : null,
 }, null, 2));
 
 async function renderThumbnail() {
   const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
-  const pool = introFighters.filter((f) => f.img);
+  // Never the finalists: random other fighters plus a mystery "?" card.
+  const others = introFighters.filter((f) => f.img && !finalistNames.has(f.name));
+  const pool = others.length >= 2 ? others : introFighters.filter((f) => f.img);
   const rnd = pool.slice().sort(() => Math.random() - 0.5);
-  const finalists = finalMatch ? finalMatch.names : [];
-  // Prefer the two finalists (a VS clash), otherwise four random fighters.
-  let stars = finalists.map((n) => pool.find((f) => f.name === n)).filter(Boolean);
-  if (stars.length < 2) stars = rnd.slice(0, Math.min(4, rnd.length));
+  const stars = rnd.slice(0, Math.min(3, rnd.length));
   const shot = shots.length ? shots[Math.floor(shots.length / 2)] : null;
-  const duel = stars.length === 2;
-  const headline = duel ? 'WHO WINS?' : `${fighters} FIGHTERS`;
-  const sub = duel ? `${fighters} FIGHTERS \u2022 ONE CHAMPION` : 'ONLY ONE CHAMPION';
-  const cards = stars.map((f, i) => `
-    <div class="c c${i}${duel ? ' duel' : ''}"><img src="data:image/png;base64,${f.img}" alt=""><span>${esc(f.name.toUpperCase())}</span></div>`).join(duel ? '<div class="vs">VS</div>' : '');
+  const duel = false;
+  const headline = `${fighters} FIGHTERS`;
+  const sub = 'ONLY ONE CHAMPION';
+  const cardHtml = stars.map((f, i) => `
+    <div class="c c${i}"><img src="data:image/png;base64,${f.img}" alt=""><span>${esc(f.name.toUpperCase())}</span></div>`);
+  cardHtml.splice(Math.floor(cardHtml.length / 2), 0, '<div class="c mys"><div class="q">?</div><span>???</span></div>');
+  const cards = cardHtml.join('');
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>
   *{box-sizing:border-box;margin:0}
   body{width:1280px;height:720px;overflow:hidden;position:relative;font-family:'Noto Sans','DejaVu Sans',Impact,sans-serif;font-weight:900;color:#fff;background:#10131c}
@@ -989,6 +1047,7 @@ async function renderThumbnail() {
   .c.duel img{max-width:420px;max-height:100%}
   .c0.duel img{transform:scale(1.08)}
   .c span{margin-top:6px;font-size:30px;letter-spacing:1px;-webkit-text-stroke:6px #000;paint-order:stroke fill;color:#fde047}
+  .q{font-size:330px;line-height:1;color:#facc15;-webkit-text-stroke:14px #000;paint-order:stroke fill;text-shadow:0 0 50px rgba(250,204,21,.8);margin-bottom:20px}
   .vs{align-self:center;font-size:130px;color:#ef4444;-webkit-text-stroke:10px #000;paint-order:stroke fill;transform:rotate(-8deg);text-shadow:0 0 40px rgba(239,68,68,.9)}
   h1{position:absolute;top:18px;left:0;right:0;text-align:center;font-size:118px;line-height:1;color:#facc15;-webkit-text-stroke:12px #000;paint-order:stroke fill;letter-spacing:2px;text-shadow:0 10px 0 rgba(0,0,0,.5)}
   .sub{position:absolute;bottom:26px;left:0;right:0;text-align:center;font-size:58px;color:#fff;-webkit-text-stroke:9px #000;paint-order:stroke fill}
