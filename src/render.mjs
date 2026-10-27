@@ -18,7 +18,7 @@ const { values: opt } = parseArgs({
     fps: { type: 'string', default: '25' },
     speed: { type: 'string', default: '1' },
     'capture-height': { type: 'string', default: '480' },
-    'max-minutes': { type: 'string', default: '60' },
+    'max-minutes': { type: 'string', default: '300' },
     'video-minutes': { type: 'string', default: '0' },
     'end-wait': { type: 'string', default: '0.6' },
     outro: { type: 'string', default: 'random' },
@@ -53,7 +53,7 @@ if (opt.help || !opt.url) {
   --fps            Output frame rate (default 25)
   --speed          Game speed slider 0.2 - 2 (default 1)
   --capture-height Browser capture height before downscale (default 480)
-  --max-minutes    Abort after this many minutes of recording (default 60)
+  --max-minutes    Abort after this many minutes of recording (default 300)
   --video-minutes  Cut the tournament footage to this many minutes, for quick tests (default 0 = full tournament)
   --end-wait       Seconds kept after the newspaper scene of the final ends (default 0.6)
   --outro          Like/share/subscribe outro: random (default), none, or ${OUTRO_VARIANTS.join(' | ')}
