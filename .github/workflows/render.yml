@@ -12,7 +12,7 @@ on:
         default: '1'
         type: string
       height:
-        description: Output height
+        description: Output height (1440 = 2K, 1080 = Full HD)
         default: '1440'
         type: string
       intro:
@@ -37,7 +37,7 @@ on:
         type: string
       max_minutes:
         description: Maximum recording time in minutes
-        default: '60'
+        default: '300'
         type: string
       upload:
         description: Upload to YouTube after rendering (true/false)
@@ -55,7 +55,7 @@ on:
 jobs:
   render:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
