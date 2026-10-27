@@ -142,7 +142,7 @@ the `tournament-video` artifact.
 
 After rendering, `python -m publish.publish` does the following:
 
-1. Reads `output/tournament.json` (fighters, finalists, stages written by the renderer), then asks DeepSeek for an English SEO title, description and tags. The champion is never revealed. If DeepSeek is unavailable, a built-in fallback text is used.
+1. Reads `output/tournament.json` (fighters, stages, chapter timestamps and spoiler-free notable moments written by the renderer), then asks DeepSeek for an English SEO title, description and tags. The champion is never revealed. If DeepSeek is unavailable, a built-in fallback text is used.
 2. Picks a random account from `tb_bao_secret` that has a value in column **`token_arena`** and `num < 9` (when all are used it resets `num` to 0). It refreshes the OAuth token if needed and saves it back to `token_arena`.
 3. Uploads the video, then sets the thumbnail `output/tournament.thumb.jpg`, then adds 1 to `num` and deletes the local files.
 
@@ -150,4 +150,9 @@ After rendering, `python -m publish.publish` does the following:
 
 ## Thumbnail
 
-The renderer builds a 1280x720 thumbnail (under 2 MB): a saturated in-game frame as the backdrop, the two finalists as large character portraits with a red VS (or four random fighters), a huge "WHO WINS?" headline and "N FIGHTERS - ONE CHAMPION" underneath. The champion is not shown as the winner, which keeps viewers curious.
+The renderer builds a 1280x720 thumbnail (under 2 MB): a saturated in-game frame, three random non-finalist fighters plus a mystery "?" card, an "N FIGHTERS" headline and "ONLY ONE CHAMPION". Finalists are never shown in the thumbnail, intro or title.
+
+
+## Description timestamps
+
+The renderer computes where each match starts in the final video (intro + highlights + cards included) and writes `chapters` to `tournament.json`. `publish/metadata.py` appends them as a YouTube `Timestamps:` block (0:00 first, 10 s apart, trimmed to fit the 5000-byte limit). The final is listed without fighter names. DeepSeek also receives `notable_moments` (closest win, fastest KO, longest fight, flawless wins) taken only from rounds before the semifinals.
