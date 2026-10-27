@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import re
@@ -135,19 +136,36 @@ def sanitize(info: dict, with_tags: bool = True) -> dict:
     return {"title": title or "2D Fighting Tournament", "description": desc.strip(), "tags": tags}
 
 
-def upload(access_token: str, mp4: Path, info: dict, privacy: str, category: str, kids: bool) -> str:
+def next_publish_at(hhmm: str) -> str | None:
+    """Next occurrence of HH:MM UTC as RFC3339, or None if empty/invalid/less than 20 minutes away."""
     try:
-        return _upload(access_token, mp4, sanitize(info), privacy, category, kids)
+        h, m = (int(x) for x in hhmm.strip().split(":"))
+    except ValueError:
+        return None
+    now = datetime.now(timezone.utc)
+    target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    if target - now < timedelta(minutes=20):
+        # Today's slot is (almost) gone: release now rather than wait a full day.
+        return None
+    return target.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def upload(access_token: str, mp4: Path, info: dict, privacy: str, category: str, kids: bool, publish_at: str | None = None) -> str:
+    try:
+        return _upload(access_token, mp4, sanitize(info), privacy, category, kids, publish_at)
     except requests.HTTPError as exc:
         if exc.response is None or exc.response.status_code != 400:
             raise
         print(f"  ! YouTube 400 ({exc.response.text[:300]}), retrying without tags/language")
-        return _upload(access_token, mp4, sanitize(info, with_tags=False), privacy, category, kids, minimal=True)
+        return _upload(access_token, mp4, sanitize(info, with_tags=False), privacy, category, kids, publish_at, minimal=True)
 
 
-def _upload(access_token, mp4: Path, info, privacy, category, kids, minimal=False) -> str:
+def _upload(access_token, mp4: Path, info, privacy, category, kids, publish_at=None, minimal=False) -> str:
     body = {"snippet": {"title": info["title"], "description": info["description"], "categoryId": str(category)},
             "status": {"privacyStatus": privacy, "selfDeclaredMadeForKids": kids}}
+    if publish_at:
+        body["status"]["privacyStatus"] = "private"
+        body["status"]["publishAt"] = publish_at
     if info["tags"]:
         body["snippet"]["tags"] = info["tags"]
     if not minimal:
@@ -181,7 +199,9 @@ def set_thumbnail(access_token: str, video_id: str, jpg: Path) -> bool:
                       headers={"Authorization": f"Bearer {access_token}", "Content-Type": "image/jpeg"})
     if r.status_code == 200:
         return True
-    print(f"  ! Thumbnail not set ({r.status_code}): {r.text[:200]}")
+    hint = (" (channel must be verified by phone at youtube.com/verify to use custom thumbnails)"
+            if r.status_code == 403 else "")
+    print(f"  ! Thumbnail not set ({r.status_code}){hint}: {r.text[:200]}")
     return False
 
 
@@ -192,6 +212,7 @@ def main() -> None:
                     choices=["public", "unlisted", "private"])
     ap.add_argument("--category", default="20", help="20 = Gaming")
     ap.add_argument("--made-for-kids", action="store_true")
+    ap.add_argument("--publish-at", default="", help="Release time HH:MM UTC (video is uploaded private and goes public then)")
     ap.add_argument("--dry-run", action="store_true", help="Only generate metadata; no upload, no DB change")
     args = ap.parse_args()
 
@@ -208,18 +229,26 @@ def main() -> None:
     if args.dry_run:
         return
 
+    publish_at = next_publish_at(args.publish_at) if args.publish_at else None
+    print(f"Release: {publish_at or 'immediately (' + args.privacy + ')'}")
     for row in candidates():
         print(f"Trying account client_id={row['client_id'][:12]}... (num={row['num']})")
         try:
             token = valid_access_token(row)
-            video_id = upload(token, mp4, info, args.privacy, args.category, args.made_for_kids)
+            video_id = upload(token, mp4, info, args.privacy, args.category, args.made_for_kids, publish_at)
         except AccountError as exc:
             print(f"  ! skipping this account: {exc}")
             continue
         print(f"Uploaded: https://youtu.be/{video_id}")
         if thumb.exists():
             try:
-                set_thumbnail(valid_access_token(row), video_id, thumb)
+                ok = False
+                for attempt in range(3):
+                    ok = set_thumbnail(valid_access_token(row), video_id, thumb)
+                    if ok:
+                        print("  Thumbnail set")
+                        break
+                    time.sleep(15)
             except Exception as exc:  # noqa: BLE001
                 print(f"  ! Thumbnail failed (video is up): {exc}")
         else:
