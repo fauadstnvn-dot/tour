@@ -13,7 +13,7 @@ from pathlib import Path
 import pymysql
 import requests
 
-from .metadata import generate
+from .metadata import generate, set_history
 
 TABLE = "tb_bao_secret"
 TOKEN_COLUMN = "token_arena"
@@ -56,6 +56,69 @@ def run_db(work, attempts: int = 5):
                 except Exception:
                     pass
     raise RuntimeError(f"MySQL unreachable after {attempts} tries: {last}")
+
+
+FTP_FILE = "title_history.json"
+FTP_KEEP = 40
+
+
+def _ftp_connect():
+    from ftplib import FTP, FTP_TLS
+    host, port = os.environ["DB_HOST"], int(os.environ.get("FTP_PORT") or 21)
+    errors = []
+    for cls in (FTP_TLS, FTP):
+        try:
+            ftp = cls()
+            ftp.connect(host, port, timeout=30)
+            ftp.login(os.environ["DB_USER"], os.environ["DB_PASS"])
+            if cls is FTP_TLS:
+                ftp.prot_p()
+            ftp.cwd(os.environ.get("FTP_DIR") or "/nangmua.vn/2d/2d/")
+            return ftp
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{cls.__name__}: {exc}")
+    raise RuntimeError("; ".join(errors))
+
+
+def recent_titles() -> list[str] | None:
+    """Previous titles from the JSON file on the FTP host. None = FTP unavailable (a missing file is just empty)."""
+    import io
+    try:
+        ftp = _ftp_connect()
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ! Could not read title history over FTP ({exc}); using the local file")
+        return None
+    try:
+        buf = io.BytesIO()
+        try:
+            ftp.retrbinary(f"RETR {FTP_FILE}", buf.write)
+        except Exception:  # noqa: BLE001 - first run: file does not exist yet
+            return []
+        return [str(t) for t in json.loads(buf.getvalue().decode("utf-8"))][-FTP_KEEP:]
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ! Title history file unreadable ({exc}); starting empty")
+        return []
+    finally:
+        try:
+            ftp.quit()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def remember_title(title: str, history: list[str]) -> None:
+    import io
+    data = json.dumps((history + [title])[-FTP_KEEP:], ensure_ascii=False, indent=1).encode("utf-8")
+    try:
+        ftp = _ftp_connect()
+        try:
+            ftp.storbinary(f"STOR {FTP_FILE}", io.BytesIO(data))
+        finally:
+            try:
+                ftp.quit()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as exc:  # noqa: BLE001
+        print(f"  ! Title history not saved over FTP: {exc}")
 
 
 def candidates() -> list[dict]:
@@ -224,6 +287,10 @@ def main() -> None:
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
     meta["dry_run"] = args.dry_run
+    history = None
+    if not args.dry_run and os.environ.get("DB_HOST"):
+        history = recent_titles()
+        set_history(history)
     info = generate(meta)
     print(f"Title: {info['title']}\nTags: {', '.join(info['tags'])}")
     mp4.with_suffix(".youtube.json").write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -254,6 +321,8 @@ def main() -> None:
                 print(f"  ! Thumbnail failed (video is up): {exc}")
         else:
             print("  ! No thumbnail file found, YouTube will auto-pick a frame")
+        if history is not None:
+            remember_title(info["title"], history)
         try:
             increment_num(row["client_id"])
             print("  num +1")
