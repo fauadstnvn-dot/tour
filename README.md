@@ -20,15 +20,15 @@ your host, so whatever is on the host is what appears in the video.
 npm install
 npx playwright install --with-deps chromium
 
-node src/render.mjs
-node src/render.mjs --url https://nangmua.vn/2d/2d/ --fighters 32 --speed 2
+GAME_URL=<your game address> node src/render.mjs
+GAME_URL=<your game address> node src/render.mjs --fighters 32 --speed 2
 ```
 
 You can also set `GAME_URL` and `FIGHTERS` as environment variables.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--url` | `$GAME_URL` or `https://nangmua.vn/2d/2d/` | Game page on your host |
+| `--url` | `$GAME_URL` (required, no default) | Game page on your host; keep it secret |
 | `--fighters` | 16 | Contestants, multiple of 4 |
 | `--out` | `output/tournament.mp4` | Output file |
 | `--height` | 240 | Output height (240 = 240p) |
@@ -128,3 +128,26 @@ the `tournament-video` artifact.
   catalog and fails after `--load-timeout` seconds (default 120).
 - The arena-only view relies on the `#stage` element; use `--full-page` if your
   layout changes.
+
+
+## Secrets (GitHub: Settings > Secrets and variables > Actions > Secrets)
+
+| Secret | Purpose |
+| --- | --- |
+| `GAME_URL` | The full game address (the former hard-coded link). Never stored in the repo; it is masked by GitHub and also scrubbed from the renderer's own logs. Delete the old `GAME_URL` repository *variable* if you set one. |
+| `DEEPSEEK_API_KEY` | DeepSeek key for the English SEO title, description and tags |
+| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASS` | MySQL on your host (table `tb_bao_secret`) |
+
+## Publishing to YouTube
+
+After rendering, `python -m publish.publish` does the following:
+
+1. Reads `output/tournament.json` (fighters, finalists, stages written by the renderer), then asks DeepSeek for an English SEO title, description and tags. The champion is never revealed. If DeepSeek is unavailable, a built-in fallback text is used.
+2. Picks a random account from `tb_bao_secret` that has a value in column **`token_arena`** and `num < 9` (when all are used it resets `num` to 0). It refreshes the OAuth token if needed and saves it back to `token_arena`.
+3. Uploads the video, then sets the thumbnail `output/tournament.thumb.jpg`, then adds 1 to `num` and deletes the local files.
+
+`--dry-run` generates the metadata only.
+
+## Thumbnail
+
+The renderer builds a 1280x720 thumbnail (under 2 MB): a saturated in-game frame as the backdrop, the two finalists as large character portraits with a red VS (or four random fighters), a huge "WHO WINS?" headline and "N FIGHTERS - ONE CHAMPION" underneath. The champion is not shown as the winner, which keeps viewers curious.
