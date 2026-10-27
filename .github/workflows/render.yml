@@ -129,6 +129,8 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASS: ${{ secrets.DB_PASS }}
+          FTP_PORT: ${{ secrets.FTP_PORT }}
+          FTP_DIR: ${{ secrets.FTP_DIR }}
         run: |
           pip install -r requirements.txt
           python -m publish.publish --video output/tournament.mp4 --privacy "${{ inputs.privacy || 'public' }}" --publish-at "${{ github.event_name == 'schedule' && '19:30' || inputs.publish_at_utc }}"
