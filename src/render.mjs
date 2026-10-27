@@ -853,13 +853,13 @@ if (picked.length) {
 // Metadata for SEO (title / description) and a click-worthy YouTube thumbnail.
 const videoShort = outFile.replace(/\.mp4$/i, '');
 const thumbPath = `${videoShort}.thumb.jpg`;
+const stageNames = [...new Set([...matches.values()].map((m) => m.roundName).filter(Boolean))];
+const finalMatch = [...matches.values()].find((m) => m.isFinal);
 try {
   await renderThumbnail();
 } catch (e) {
-  log(`Thumbnail failed (video is still produced): ${redact(String(e.message).split('\n')[0])}`);
+  log(`Thumbnail failed (video is still produced): ${redact(String(e.stack || e.message).split('\n').slice(0, 4).join(' | '))}`);
 }
-const stageNames = [...new Set([...matches.values()].map((m) => m.roundName).filter(Boolean))];
-const finalMatch = [...matches.values()].find((m) => m.isFinal);
 writeFileSync(`${videoShort}.json`, JSON.stringify({
   fighters,
   fighterNames: introFighters.map((f) => f.name),
