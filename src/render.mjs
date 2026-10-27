@@ -11,7 +11,7 @@ import { makeIntroAudio, makeOutroAudio } from './sfx.mjs';
 
 const { values: opt } = parseArgs({
   options: {
-    url: { type: 'string', default: process.env.GAME_URL || 'https://nangmua.vn/2d/2d/' },
+    url: { type: 'string', default: process.env.GAME_URL || '' },
     fighters: { type: 'string', default: process.env.FIGHTERS ?? '16' },
     out: { type: 'string', default: process.env.OUT ?? 'output/tournament.mp4' },
     height: { type: 'string', default: '240' },
@@ -42,7 +42,8 @@ const { values: opt } = parseArgs({
 });
 
 if (opt.help || !opt.url) {
-  console.log(`Usage: node src/render.mjs --url https://your-host/index.php [options]
+  if (!opt.help) console.error('GAME_URL is not set. Provide it as the GAME_URL secret / environment variable (the game address is never stored in the repository).');
+  console.log(`Usage: node src/render.mjs [options]   (game address: env GAME_URL)
 
   --url            Game URL on your host (or env GAME_URL). Characters, skills,
                    referee and scenery are loaded by the page from that host.
@@ -99,7 +100,20 @@ mkdirSync(dirname(outFile), { recursive: true });
 mkdirSync(tmpDir, { recursive: true });
 for (const f of readdirSync(tmpDir)) rmSync(join(tmpDir, f), { recursive: true, force: true });
 
-const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
+// The game address is a secret: scrub it (and its host) from every line that reaches the logs.
+const secretParts = (() => {
+  try {
+    const u = new URL(opt.url);
+    return [opt.url, u.href, u.origin, u.host].filter(Boolean).sort((a, b) => b.length - a.length);
+  } catch { return [opt.url].filter(Boolean); }
+})();
+const redact = (v) => {
+  if (typeof v !== 'string') return v;
+  let t = v;
+  for (const part of secretParts) t = t.split(part).join('***');
+  return t;
+};
+const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a.map(redact));
 
 // The host's bot shield fingerprints headless browsers (HeadlessChrome UA,
 // navigator.webdriver) and intermittently answers with an HTML verification
@@ -289,7 +303,7 @@ const retryDelayMs = Number(opt['retry-delay']) * 1000;
 let loaded = false;
 for (let attempt = 1; attempt <= maxAttempts && !loaded; attempt++) {
   try {
-    log(`Opening ${opt.url} (attempt ${attempt}/${maxAttempts})`);
+    log(`Opening game page (attempt ${attempt}/${maxAttempts})`);
     // Not 'load': that waits for every image/audio/font, and one stalled asset on a slow host times out the whole attempt.
     // The wait for the character catalog below is the real readiness check.
     const res = await page.goto(opt.url, { waitUntil: 'domcontentloaded', timeout: loadTimeoutMs });
@@ -312,7 +326,7 @@ for (let attempt = 1; attempt <= maxAttempts && !loaded; attempt++) {
   }
 }
 if (!loaded) {
-  console.error(`Could not load game data from ${opt.url} after ${maxAttempts} attempts.`);
+  console.error('Could not load game data from the game host after ' + maxAttempts + ' attempts.');
   await context.close();
   await browser.close();
   process.exit(1);
@@ -834,6 +848,75 @@ if (picked.length) {
   });
   hlCard = await recordCard(buildTitleCardHtml({ title: IT.hlTitle, sub: IT.hlSub, shots, seconds: HL_CARD_SECONDS }), HL_CARD_SECONDS, 'hlcard');
   mainCard = await recordCard(buildTitleCardHtml({ title: IT.mainTitle, sub: IT.mainSub, shots, seconds: MAIN_CARD_SECONDS, tone: 'red' }), MAIN_CARD_SECONDS, 'maincard');
+}
+
+// Metadata for SEO (title / description) and a click-worthy YouTube thumbnail.
+const videoShort = outFile.replace(/\.mp4$/i, '');
+const thumbPath = `${videoShort}.thumb.jpg`;
+try {
+  await renderThumbnail();
+} catch (e) {
+  log(`Thumbnail failed (video is still produced): ${redact(String(e.message).split('\n')[0])}`);
+}
+const stageNames = [...new Set([...matches.values()].map((m) => m.roundName).filter(Boolean))];
+const finalMatch = [...matches.values()].find((m) => m.isFinal);
+writeFileSync(`${videoShort}.json`, JSON.stringify({
+  fighters,
+  fighterNames: introFighters.map((f) => f.name),
+  champion: championName,
+  finalists: finalMatch ? finalMatch.names : [],
+  stages: stageNames,
+  highlights: picked.map((m) => ({ label: m.label, names: m.names })),
+  durationSeconds: Math.round(mainEnd - trimSeconds),
+  height: outHeight,
+  thumbnail: existsSync(thumbPath) ? thumbPath : null,
+}, null, 2));
+
+async function renderThumbnail() {
+  const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const pool = introFighters.filter((f) => f.img);
+  const rnd = pool.slice().sort(() => Math.random() - 0.5);
+  const finalists = finalMatch ? finalMatch.names : [];
+  // Prefer the two finalists (a VS clash), otherwise four random fighters.
+  let stars = finalists.map((n) => pool.find((f) => f.name === n)).filter(Boolean);
+  if (stars.length < 2) stars = rnd.slice(0, Math.min(4, rnd.length));
+  const shot = shots.length ? shots[Math.floor(shots.length / 2)] : null;
+  const duel = stars.length === 2;
+  const headline = duel ? 'WHO WINS?' : `${fighters} FIGHTERS`;
+  const sub = duel ? `${fighters} FIGHTERS \u2022 ONE CHAMPION` : 'ONLY ONE CHAMPION';
+  const cards = stars.map((f, i) => `
+    <div class="c c${i}${duel ? ' duel' : ''}"><img src="data:image/png;base64,${f.img}" alt=""><span>${esc(f.name.toUpperCase())}</span></div>`).join(duel ? '<div class="vs">VS</div>' : '');
+  const html = `<!doctype html><html><head><meta charset="utf-8"><style>
+  *{box-sizing:border-box;margin:0}
+  body{width:1280px;height:720px;overflow:hidden;position:relative;font-family:'Noto Sans','DejaVu Sans',Impact,sans-serif;font-weight:900;color:#fff;background:#10131c}
+  .bg{position:absolute;inset:-30px;background:${shot ? `url(data:image/jpeg;base64,${shot})` : 'linear-gradient(135deg,#7f1d1d,#1e1b4b)'} center/cover;filter:saturate(1.7) contrast(1.15) brightness(.6) blur(${shot ? 3 : 0}px)}
+  .glow{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 70%,rgba(250,204,21,.45),transparent 60%),linear-gradient(180deg,rgba(0,0,0,.7) 0,transparent 36%,transparent 64%,rgba(0,0,0,.85) 100%)}
+  .row{position:absolute;left:0;right:0;top:150px;bottom:110px;display:flex;align-items:flex-end;justify-content:center;gap:24px}
+  .c{position:relative;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-end}
+  .c img{max-height:92%;max-width:340px;object-fit:contain;filter:drop-shadow(0 0 22px rgba(0,0,0,.9)) drop-shadow(0 0 6px rgba(250,204,21,.7))}
+  .c.duel img{max-width:420px;max-height:100%}
+  .c0.duel img{transform:scale(1.08)}
+  .c span{margin-top:6px;font-size:30px;letter-spacing:1px;-webkit-text-stroke:6px #000;paint-order:stroke fill;color:#fde047}
+  .vs{align-self:center;font-size:130px;color:#ef4444;-webkit-text-stroke:10px #000;paint-order:stroke fill;transform:rotate(-8deg);text-shadow:0 0 40px rgba(239,68,68,.9)}
+  h1{position:absolute;top:18px;left:0;right:0;text-align:center;font-size:118px;line-height:1;color:#facc15;-webkit-text-stroke:12px #000;paint-order:stroke fill;letter-spacing:2px;text-shadow:0 10px 0 rgba(0,0,0,.5)}
+  .sub{position:absolute;bottom:26px;left:0;right:0;text-align:center;font-size:58px;color:#fff;-webkit-text-stroke:9px #000;paint-order:stroke fill}
+  .bar{position:absolute;left:0;right:0;bottom:0;height:12px;background:#facc15}
+  </style></head><body><div class="bg"></div><div class="glow"></div><h1>${esc(headline)}</h1>
+  <div class="row">${cards}</div><div class="sub">${esc(sub)}</div><div class="bar"></div></body></html>`;
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
+  try {
+    const p = await ctx.newPage();
+    await p.setContent(html, { waitUntil: 'load' });
+    await p.evaluate(() => document.fonts.ready);
+    for (const quality of [92, 82, 70, 55]) {
+      const buf = await p.screenshot({ type: 'jpeg', quality });
+      writeFileSync(thumbPath, buf);
+      if (buf.length <= 2 * 1024 * 1024) break;
+    }
+    log('Thumbnail written:', thumbPath);
+  } finally {
+    await ctx.close();
+  }
 }
 await browser.close();
 
