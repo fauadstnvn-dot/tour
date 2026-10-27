@@ -3,10 +3,6 @@ name: Render tournament video
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: Game URL on your host (leave empty to use the GAME_URL repository variable)
-        required: false
-        type: string
       fighters:
         description: Number of fighters (multiple of 4)
         default: '16'
@@ -43,6 +39,14 @@ on:
         description: Maximum recording time in minutes
         default: '60'
         type: string
+      upload:
+        description: Upload to YouTube after rendering (true/false)
+        default: 'true'
+        type: string
+      privacy:
+        description: YouTube privacy (public, unlisted, private)
+        default: public
+        type: string
       allow_no_scenery:
         description: Allow recording without scenery (default false - the run fails instead of producing a scenery-less video)
         default: 'false'
@@ -57,6 +61,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Install ffmpeg and fonts
         run: |
           sudo apt-get update
@@ -83,7 +90,7 @@ jobs:
         run: npx playwright install-deps chromium
       - name: Render
         env:
-          GAME_URL: ${{ inputs.url || vars.GAME_URL || 'https://nangmua.vn/2d/2d/' }}
+          GAME_URL: ${{ secrets.GAME_URL }}
         run: >
           node src/render.mjs
           --fighters "${{ inputs.fighters }}"
@@ -97,11 +104,27 @@ jobs:
           --max-minutes "${{ inputs.max_minutes }}"
           --out output/tournament.mp4
           ${{ inputs.allow_no_scenery == 'true' && '--allow-no-scenery' || '' }}
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - name: Generate SEO with DeepSeek and upload to YouTube
+        id: publish
+        if: ${{ inputs.upload != 'false' }}
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASS: ${{ secrets.DB_PASS }}
+        run: |
+          pip install -r requirements.txt
+          python -m publish.publish --video output/tournament.mp4 --privacy "${{ inputs.privacy || 'public' }}"
+      - name: Keep the video if it was not uploaded
+        if: ${{ always() && steps.publish.outcome != 'success' }}
+        uses: actions/upload-artifact@v4
         with:
           name: tournament-video
           path: |
             output/tournament.mp4
-            output/debug-stage.png
+            output/tournament.thumb.jpg
+            output/tournament.json
+          retention-days: 7
           if-no-files-found: ignore
