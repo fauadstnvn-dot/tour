@@ -1,6 +1,9 @@
 name: Render tournament video
 
 on:
+  schedule:
+    # 15:30 UTC daily: renders for a few hours, the video goes public at PUBLISH_AT_UTC (19:30 UTC)
+    - cron: '30 15 * * *'
   workflow_dispatch:
     inputs:
       fighters:
@@ -21,7 +24,7 @@ on:
         type: string
       highlights:
         description: Number of highlight clips (0 = off)
-        default: '4'
+        default: '0'
         type: string
       match_card:
         description: Seconds of the pre-match card (0 = off)
@@ -46,6 +49,10 @@ on:
       privacy:
         description: YouTube privacy (public, unlisted, private)
         default: public
+        type: string
+      publish_at_utc:
+        description: Public release time in UTC (HH:MM). Empty = publish immediately
+        default: '19:30'
         type: string
       allow_no_scenery:
         description: Allow recording without scenery (default false - the run fails instead of producing a scenery-less video)
@@ -93,15 +100,15 @@ jobs:
           GAME_URL: ${{ secrets.GAME_URL }}
         run: >
           node src/render.mjs
-          --fighters "${{ inputs.fighters }}"
-          --speed "${{ inputs.speed }}"
-          --height "${{ inputs.height }}"
-          --intro "${{ inputs.intro }}"
-          --highlights "${{ inputs.highlights }}"
-          --lang "${{ inputs.lang }}"
-          --match-card "${{ inputs.match_card }}"
-          --video-minutes "${{ inputs.video_minutes }}"
-          --max-minutes "${{ inputs.max_minutes }}"
+          --fighters "${{ inputs.fighters || '16' }}"
+          --speed "${{ inputs.speed || '1' }}"
+          --height "${{ inputs.height || '1440' }}"
+          --intro "${{ inputs.intro || 'random' }}"
+          --highlights "${{ inputs.highlights || '0' }}"
+          --lang "${{ inputs.lang || 'en' }}"
+          --match-card "${{ inputs.match_card || '3.4' }}"
+          --video-minutes "${{ inputs.video_minutes || '0' }}"
+          --max-minutes "${{ inputs.max_minutes || '300' }}"
           --out output/tournament.mp4
           ${{ inputs.allow_no_scenery == 'true' && '--allow-no-scenery' || '' }}
       - name: Generate SEO with DeepSeek and upload to YouTube
@@ -116,7 +123,7 @@ jobs:
           DB_PASS: ${{ secrets.DB_PASS }}
         run: |
           pip install -r requirements.txt
-          python -m publish.publish --video output/tournament.mp4 --privacy "${{ inputs.privacy || 'public' }}"
+          python -m publish.publish --video output/tournament.mp4 --privacy "${{ inputs.privacy || 'public' }}" --publish-at "${{ github.event_name == 'schedule' && '19:30' || inputs.publish_at_utc }}"
       - name: Keep the video if it was not uploaded
         if: ${{ always() && steps.publish.outcome != 'success' }}
         uses: actions/upload-artifact@v4
