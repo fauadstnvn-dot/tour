@@ -139,6 +139,13 @@ function gridFor(count, header, footer = 15) {
   }
   return { cols: best.cols, ch: Number(best.ch.toFixed(1)) };
 }
+// The "last one standing" is never a real fighter: a neutral mystery card is mixed in so the
+// intro cannot reveal (or accidentally match) the real champion.
+const withMystery = (list) => {
+  const real = list.slice(0, Math.max(1, list.length - 1));
+  const at = Math.floor(Math.random() * (real.length + 1));
+  return [...real.slice(0, at), { name: '???', mystery: true }, ...real.slice(at)];
+};
 const gridStyle = (cols, ch) => `width:${(cols * ch * 0.9 + (cols - 1) * 1.6 + 0.6).toFixed(1)}vh`;
 
 function body(variant, fighters, t, seconds) {
@@ -152,15 +159,16 @@ function body(variant, fighters, t, seconds) {
       return {
         html: `<div class="wrap"><div class="kicker">${esc(t.who)}</div>${card(shuffle(fighters)[0], 46, 'hero').replace('<img ', '<img id="himg" ').replace('<span class="nm">', '<span class="nm" id="hnm">').replace('class="card hero"', 'id="hero" class="card hero"')}<div class="sub" style="animation-delay:.6s">${esc(t.whoSub)}</div></div>`,
         js: `const F=${data},hero=document.getElementById('hero'),img=document.getElementById('himg'),nm=document.getElementById('hnm');let i=0,d=60;const t0=performance.now();
-(function tick(){if(performance.now()-t0>${ms * 0.72}){hero.classList.add('sil','final');nm.textContent='???';return}
+(function tick(){if(performance.now()-t0>${ms * 0.72}){hero.classList.add('final');if(img)img.style.display='none';const q=document.createElement('div');q.className='ph';q.textContent='?';hero.insertBefore(q,hero.firstChild);nm.textContent='???';return}
 const f=F[i++%F.length];if(img&&f.i)img.src=f.i;nm.textContent=f.n;d=Math.min(380,d*1.07);setTimeout(tick,d)})();`,
       };
     }
     case 'survive': {
-      const { cols, ch } = gridFor(shown.length, 23, 22);
+      const grid = withMystery(shown);
+      const { cols, ch } = gridFor(grid.length, 23, 22);
       return {
-        html: `<div class="wrap" style="gap:2.5vh;justify-content:flex-start;padding-top:5vh"><div class="top"><div class="big2 num" id="num">${n}</div><div class="kicker" style="font-size:6vh">${esc(t.survive)}</div></div><div class="grid" id="g" style="${gridStyle(cols, ch)}">${shown.map((f) => card(f, ch)).join('')}</div><div class="sub" id="end" style="opacity:0">${esc(t.surviveEnd)}</div></div>`,
-        js: `const num=document.getElementById('num'),cards=[...document.querySelectorAll('.card')].sort(()=>Math.random()-.5),keep=cards.pop();let c=${n};
+        html: `<div class="wrap" style="gap:2.5vh;justify-content:flex-start;padding-top:5vh"><div class="top"><div class="big2 num" id="num">${n}</div><div class="kicker" style="font-size:6vh">${esc(t.survive)}</div></div><div class="grid" id="g" style="${gridStyle(cols, ch)}">${grid.map((f) => card(f, ch, f.mystery ? 'mys' : '')).join('')}</div><div class="sub" id="end" style="opacity:0">${esc(t.surviveEnd)}</div></div>`,
+        js: `const num=document.getElementById('num'),keep=document.querySelector('.card.mys'),cards=[...document.querySelectorAll('.card:not(.mys)')].sort(()=>Math.random()-.5);let c=${n};
 const total=Math.max(1,${n - 1}),step=Math.max(50,${ms * 0.7}/total);
 const iv=setInterval(()=>{c--;num.textContent=c;num.classList.remove('num');void num.offsetWidth;num.classList.add('num');
 const v=cards.pop();if(v)v.classList.add('dead');
@@ -191,12 +199,13 @@ seq.forEach((s,i)=>setTimeout(()=>{num.textContent=s;if(i===3){num.style.color='
     }
     case 'elim':
     default: {
-      const { cols, ch } = gridFor(shown.length, 16, 16);
+      const grid = withMystery(shown);
+      const { cols, ch } = gridFor(grid.length, 16, 16);
       return {
-        html: `<div class="wrap" style="gap:2.5vh;justify-content:flex-start;padding-top:5vh"><div class="kicker" style="font-size:5.6vh">${esc(t.elim)}</div><div class="grid" style="${gridStyle(cols, ch)}">${shown.map((f) => card(f, ch)).join('')}</div></div>`,
-        js: `const cards=[...document.querySelectorAll('.card')].sort(()=>Math.random()-.5),keep=cards.pop(),step=Math.max(50,${ms * 0.7}/Math.max(1,cards.length));
+        html: `<div class="wrap" style="gap:2.5vh;justify-content:flex-start;padding-top:5vh"><div class="kicker" style="font-size:5.6vh">${esc(t.elim)}</div><div class="grid" style="${gridStyle(cols, ch)}">${grid.map((f) => card(f, ch, f.mystery ? 'mys' : '')).join('')}</div></div>`,
+        js: `const keep=document.querySelector('.card.mys'),cards=[...document.querySelectorAll('.card:not(.mys)')].sort(()=>Math.random()-.5),step=Math.max(50,${ms * 0.7}/Math.max(1,cards.length));
 cards.forEach((c,i)=>setTimeout(()=>c.classList.add('dead'),400+i*step));
-setTimeout(()=>keep.classList.add('sil','last'),400+cards.length*step+150);`,
+setTimeout(()=>keep.classList.add('last'),400+cards.length*step+150);`,
       };
     }
   }
