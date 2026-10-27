@@ -223,6 +223,7 @@ def main() -> None:
         sys.exit(f"Video not found: {mp4}")
     meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
 
+    meta["dry_run"] = args.dry_run
     info = generate(meta)
     print(f"Title: {info['title']}\nTags: {', '.join(info['tags'])}")
     mp4.with_suffix(".youtube.json").write_text(json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8")
