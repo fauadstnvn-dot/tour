@@ -111,6 +111,14 @@ jobs:
           --max-minutes "${{ inputs.max_minutes || '300' }}"
           --out output/tournament.mp4
           ${{ inputs.allow_no_scenery == 'true' && '--allow-no-scenery' || '' }}
+      - name: Keep the thumbnail for inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: thumbnail
+          path: output/tournament.thumb.jpg
+          retention-days: 3
+          if-no-files-found: warn
       - name: Generate SEO with DeepSeek and upload to YouTube
         id: publish
         if: ${{ inputs.upload != 'false' }}
