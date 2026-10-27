@@ -35,7 +35,7 @@ You can also set `GAME_URL` and `FIGHTERS` as environment variables.
 | `--fps` | 25 | Output frame rate |
 | `--speed` | 1 | Game speed slider (0.2 - 2) |
 | `--capture-height` | 480 | Browser capture size before downscaling |
-| `--max-minutes` | 60 | Stop recording after this long |
+| `--max-minutes` | 300 | Stop recording after this long |
 | `--end-wait` | 8 | Seconds kept after the champion screen |
 | `--intro` | `random` | Hook intro: `random`, `none`, `who`, `survive`, `predict`, `versus`, `countdown`, `elim` |
 | `--intro-seconds` | 5 | Intro length |
