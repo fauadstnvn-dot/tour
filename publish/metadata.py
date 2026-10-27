@@ -48,7 +48,18 @@ SYSTEM_PROMPT = (
 )
 
 
+_EXTERNAL_HISTORY: list[str] | None = None
+
+
+def set_history(titles: list[str] | None) -> None:
+    """Use a history supplied by the caller (e.g. loaded from MySQL) instead of the local file."""
+    global _EXTERNAL_HISTORY
+    _EXTERNAL_HISTORY = None if titles is None else [str(t) for t in titles][-HISTORY_KEEP:]
+
+
 def load_history() -> list[str]:
+    if _EXTERNAL_HISTORY is not None:
+        return _EXTERNAL_HISTORY
     try:
         data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
         return [str(t) for t in data][-HISTORY_KEEP:]
@@ -57,6 +68,8 @@ def load_history() -> list[str]:
 
 
 def save_history(title: str) -> None:
+    if _EXTERNAL_HISTORY is not None:
+        return
     try:
         HISTORY_FILE.write_text(json.dumps((load_history() + [title])[-HISTORY_KEEP:], ensure_ascii=False, indent=1),
                                 encoding="utf-8")
