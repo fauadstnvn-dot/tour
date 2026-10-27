@@ -148,8 +148,8 @@ const withMystery = (list) => {
 };
 const gridStyle = (cols, ch) => `width:${(cols * ch * 0.9 + (cols - 1) * 1.6 + 0.6).toFixed(1)}vh`;
 
-function body(variant, fighters, t, seconds) {
-  const n = fighters.length;
+function body(variant, fighters, t, seconds, total) {
+  const n = total || fighters.length;
   const ms = seconds * 1000;
   const shown = shuffle(fighters).slice(0, 32);
 
@@ -211,10 +211,10 @@ setTimeout(()=>keep.classList.add('last'),400+cards.length*step+150);`,
   }
 }
 
-export function buildIntroHtml({ variant, fighters, shots = [], lang = 'en', seconds = 5 }) {
+export function buildIntroHtml({ variant, fighters, total = 0, shots = [], lang = 'en', seconds = 5 }) {
   const t = TEXT[lang] ?? TEXT.en;
   const list = fighters.length ? fighters : [{ name: '???' }];
-  const { html, js } = body(variant, list, t, seconds);
+  const { html, js } = body(variant, list, t, seconds, total);
   return `<!doctype html><html><head><meta charset="utf-8"><style>${css(seconds)}</style></head>
 <body>${reel(shots, seconds)}<div class="vig"></div>${html}<div class="foot"><div class="note">${esc(t.highlightNote)}</div><div class="watch">${esc(t.watch)}</div></div>
 <script>window.__go=function(){document.body.classList.add('go');${js}};</script></body></html>`;
